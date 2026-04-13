@@ -386,9 +386,16 @@ function mapPlayNcSearchItem(item: UnknownRecord, classMap: Map<number, ClassMet
 }
 
 async function fetchPlayNcCharacterDetail(characterId: string, serverId: number) {
+  let normalizedCharacterId = characterId;
+  try {
+    normalizedCharacterId = decodeURIComponent(characterId);
+  } catch {
+    normalizedCharacterId = characterId;
+  }
+
   const params = new URLSearchParams({
     lang: "ko-kr",
-    characterId,
+    characterId: normalizedCharacterId,
     serverId: String(serverId),
   });
 
@@ -450,6 +457,7 @@ async function enrichPlayNcCharacters(
 ): Promise<CharacterSummary[]> {
   const base = [...characters];
   const target = base.slice(0, DETAIL_ENRICH_LIMIT);
+  const byId = new Map(base.map((character) => [character.id, character]));
 
   for (let index = 0; index < target.length; index += DETAIL_BATCH_SIZE) {
     const batch = target.slice(index, index + DETAIL_BATCH_SIZE);
@@ -470,7 +478,7 @@ async function enrichPlayNcCharacters(
         continue;
       }
 
-      const entry = base.find((character) => character.id === item.character.id);
+      const entry = byId.get(item.character.id);
       if (!entry) {
         continue;
       }
@@ -493,6 +501,75 @@ async function enrichPlayNcCharacters(
           entry.className = entry.className ?? classMeta.className;
           entry.classKey = entry.classKey ?? classMeta.classKey;
           entry.classIconUrl = classMeta.classIconUrl ?? toClassIconUrl(entry.classKey);
+        }
+      }
+    }
+  }
+
+  return base;
+}
+
+async function enrichMissingStatsFromPlayNcDetail(
+  characters: CharacterSummary[],
+  classMap: Map<number, ClassMeta>,
+): Promise<CharacterSummary[]> {
+  const base = [...characters];
+  const byId = new Map(base.map((character) => [character.id, character]));
+  const target = base
+    .filter((character) => character.itemLevel <= 0 || character.combatPower <= 0)
+    .slice(0, DETAIL_ENRICH_LIMIT);
+
+  for (let index = 0; index < target.length; index += DETAIL_BATCH_SIZE) {
+    const batch = target.slice(index, index + DETAIL_BATCH_SIZE);
+
+    const results = await Promise.all(
+      batch.map(async (character) => {
+        try {
+          const detail = await fetchPlayNcCharacterDetail(character.characterId, character.serverId);
+          return { character, detail };
+        } catch {
+          return null;
+        }
+      }),
+    );
+
+    for (const item of results) {
+      if (!item) {
+        continue;
+      }
+
+      const entry = byId.get(item.character.id);
+      if (!entry) {
+        continue;
+      }
+
+      if (item.detail.itemLevel > 0 && entry.itemLevel <= 0) {
+        entry.itemLevel = item.detail.itemLevel;
+      }
+      if (item.detail.combatPower > 0 && entry.combatPower <= 0) {
+        entry.combatPower = item.detail.combatPower;
+      }
+      entry.profileImageUrl = entry.profileImageUrl ?? item.detail.profileImageUrl;
+
+      if (!entry.classId) {
+        entry.classId = item.detail.classId;
+      }
+      if (!entry.className) {
+        entry.className = item.detail.className;
+      }
+      if (!entry.classKey) {
+        entry.classKey = item.detail.classKey;
+      }
+      if (!entry.classIconUrl) {
+        entry.classIconUrl = item.detail.classIconUrl;
+      }
+
+      if (entry.classId) {
+        const classMeta = classMap.get(entry.classId);
+        if (classMeta) {
+          entry.className = entry.className ?? classMeta.className;
+          entry.classKey = entry.classKey ?? classMeta.classKey;
+          entry.classIconUrl = entry.classIconUrl ?? classMeta.classIconUrl ?? toClassIconUrl(entry.classKey);
         }
       }
     }
@@ -648,9 +725,18 @@ export async function GET(request: NextRequest) {
   try {
     const aon2 = await searchWithAon2Api(name, serverId, size);
     if (aon2.length > 0) {
+      let enriched = aon2;
+      try {
+        const classMap = await getPlayNcClassMap();
+        enriched = await enrichMissingStatsFromPlayNcDetail(aon2, classMap);
+      } catch (error) {
+        warnings.push(`plaync detail enrich on aon2 error: ${error instanceof Error ? error.message : "unknown"}`);
+      }
+
       return NextResponse.json({
         source: "aon2-api",
-        items: aon2,
+        items: enriched,
+        warnings,
       });
     }
     warnings.push("aon2 api no result");
@@ -675,9 +761,17 @@ export async function GET(request: NextRequest) {
   try {
     const scraped = await searchWithPlayNcScrape(name, serverId);
     if (scraped.length > 0) {
+      let enriched = scraped;
+      try {
+        const classMap = await getPlayNcClassMap();
+        enriched = await enrichMissingStatsFromPlayNcDetail(scraped, classMap);
+      } catch (error) {
+        warnings.push(`plaync detail enrich on scrape error: ${error instanceof Error ? error.message : "unknown"}`);
+      }
+
       return NextResponse.json({
         source: "plaync-scrape",
-        items: scraped,
+        items: enriched,
         warnings,
       });
     }

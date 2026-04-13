@@ -76,6 +76,30 @@ function formatNumber(value: number) {
   return value.toLocaleString("ko-KR");
 }
 
+function formatAverage(value: number | null) {
+  if (value === null) {
+    return "-";
+  }
+  return Math.round(value).toLocaleString("ko-KR");
+}
+
+function calculatePartyAverage(slots: Array<CharacterSummary | null>) {
+  const members = slots.filter((slot): slot is CharacterSummary => slot !== null);
+  const itemLevelValues = members.map((character) => character.itemLevel).filter((value) => value > 0);
+  const combatPowerValues = members.map((character) => character.combatPower).filter((value) => value > 0);
+
+  const itemLevelAverage =
+    itemLevelValues.length > 0 ? itemLevelValues.reduce((sum, value) => sum + value, 0) / itemLevelValues.length : null;
+  const combatPowerAverage =
+    combatPowerValues.length > 0 ? combatPowerValues.reduce((sum, value) => sum + value, 0) / combatPowerValues.length : null;
+
+  return {
+    memberCount: members.length,
+    itemLevelAverage,
+    combatPowerAverage,
+  };
+}
+
 function classInitial(className?: string) {
   if (!className || className.trim().length === 0) {
     return "?";
@@ -897,75 +921,103 @@ export default function PartyBuilderPage({
           </section>
 
           <section className="grid grid-cols-1 gap-4 xl:grid-cols-2">
-            {parties.map((party) => (
-              <article key={party.id} className={`${PANEL_CLASS} p-4`}>
-                <div className="mb-3 flex items-center justify-between gap-3">
-                  <input
-                    value={party.name}
-                    onChange={(event) => {
-                      const nextName = event.target.value;
-                      setParties((previous) =>
-                        previous.map((entry) => (entry.id === party.id ? { ...entry, name: nextName } : entry)),
-                      );
-                    }}
-                    className={INPUT_CLASS}
-                  />
-                  <span
-                    className={`rounded-md px-2 py-1 text-xs font-semibold ${
-                      party.kind === "rudra" ? "bg-amber-900/40 text-amber-200" : "bg-indigo-900/40 text-indigo-200"
-                    }`}
-                  >
-                    {party.kind === "rudra" ? "루드라" : "침식"}
-                  </span>
+            {parties.map((party) => {
+              const teamOneSlots = party.slots.slice(0, 4);
+              const teamTwoSlots = party.slots.slice(4);
+              const teamOneAverage = calculatePartyAverage(teamOneSlots);
+              const teamTwoAverage = calculatePartyAverage(teamTwoSlots);
+              const fullAverage = calculatePartyAverage(party.slots);
 
-                  <div className="flex items-center gap-2">
-                    <button
-                      type="button"
-                      onClick={() => clearParty(party.id)}
-                      className="rounded-md border border-slate-600 px-2.5 py-1.5 text-xs font-medium text-slate-300 transition hover:bg-slate-800"
+              return (
+                <article key={party.id} className={`${PANEL_CLASS} p-4`}>
+                  <div className="mb-3 flex items-center justify-between gap-3">
+                    <input
+                      value={party.name}
+                      onChange={(event) => {
+                        const nextName = event.target.value;
+                        setParties((previous) =>
+                          previous.map((entry) => (entry.id === party.id ? { ...entry, name: nextName } : entry)),
+                        );
+                      }}
+                      className={INPUT_CLASS}
+                    />
+                    <span
+                      className={`rounded-md px-2 py-1 text-xs font-semibold ${
+                        party.kind === "rudra" ? "bg-amber-900/40 text-amber-200" : "bg-indigo-900/40 text-indigo-200"
+                      }`}
                     >
-                      비우기
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => removeParty(party.id)}
-                      disabled={parties.length <= 1}
-                      className="rounded-md border border-slate-600 px-2.5 py-1.5 text-xs font-medium text-slate-300 transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-40"
-                    >
-                      삭제
-                    </button>
-                  </div>
-                </div>
+                      {party.kind === "rudra" ? "루드라" : "침식"}
+                    </span>
 
-                <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
-                  <div className="space-y-2">
-                    <p className="text-xs font-semibold uppercase tracking-wider text-slate-400">1팀</p>
-                    {party.slots.slice(0, 4).map((character, index) => (
-                      <PartySlot
-                        key={`${party.id}-slot-${index}`}
-                        partyId={party.id}
-                        slotIndex={index}
-                        character={character}
-                        onMoveToWaiting={moveSlotToWaiting}
-                      />
-                    ))}
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => clearParty(party.id)}
+                        className="rounded-md border border-slate-600 px-2.5 py-1.5 text-xs font-medium text-slate-300 transition hover:bg-slate-800"
+                      >
+                        비우기
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => removeParty(party.id)}
+                        disabled={parties.length <= 1}
+                        className="rounded-md border border-slate-600 px-2.5 py-1.5 text-xs font-medium text-slate-300 transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-40"
+                      >
+                        삭제
+                      </button>
+                    </div>
                   </div>
 
-                  <div className="space-y-2">
-                    <p className="text-xs font-semibold uppercase tracking-wider text-slate-400">2팀</p>
-                    {party.slots.slice(4).map((character, index) => (
-                      <PartySlot
-                        key={`${party.id}-slot-${index + 4}`}
-                        partyId={party.id}
-                        slotIndex={index + 4}
-                        character={character}
-                        onMoveToWaiting={moveSlotToWaiting}
-                      />
-                    ))}
+                  <div className="mb-3 grid grid-cols-1 gap-2 lg:grid-cols-3">
+                    <div className="rounded-md border border-slate-700 bg-slate-800/70 px-3 py-2 text-xs text-slate-300">
+                      <p className="font-semibold text-slate-200">1팀 평균 ({teamOneAverage.memberCount}/4)</p>
+                      <p className="mt-1">IL {formatAverage(teamOneAverage.itemLevelAverage)}</p>
+                      <p>CP {formatAverage(teamOneAverage.combatPowerAverage)}</p>
+                    </div>
+
+                    <div className="rounded-md border border-slate-700 bg-slate-800/70 px-3 py-2 text-xs text-slate-300">
+                      <p className="font-semibold text-slate-200">2팀 평균 ({teamTwoAverage.memberCount}/4)</p>
+                      <p className="mt-1">IL {formatAverage(teamTwoAverage.itemLevelAverage)}</p>
+                      <p>CP {formatAverage(teamTwoAverage.combatPowerAverage)}</p>
+                    </div>
+
+                    <div className="rounded-md border border-slate-600 bg-slate-800 px-3 py-2 text-xs text-slate-200">
+                      <p className="font-semibold">전체 8인 평균 ({fullAverage.memberCount}/8)</p>
+                      <p className="mt-1">IL {formatAverage(fullAverage.itemLevelAverage)}</p>
+                      <p>CP {formatAverage(fullAverage.combatPowerAverage)}</p>
+                    </div>
                   </div>
-                </div>
-              </article>
-            ))}
+
+                  <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+                    <div className="space-y-2">
+                      <p className="text-xs font-semibold uppercase tracking-wider text-slate-400">1팀</p>
+                      {teamOneSlots.map((character, index) => (
+                        <PartySlot
+                          key={`${party.id}-slot-${index}`}
+                          partyId={party.id}
+                          slotIndex={index}
+                          character={character}
+                          onMoveToWaiting={moveSlotToWaiting}
+                        />
+                      ))}
+                    </div>
+
+                    <div className="space-y-2">
+                      <p className="text-xs font-semibold uppercase tracking-wider text-slate-400">2팀</p>
+                      {teamTwoSlots.map((character, index) => (
+                        <PartySlot
+                          key={`${party.id}-slot-${index + 4}`}
+                          partyId={party.id}
+                          slotIndex={index + 4}
+                          character={character}
+                          onMoveToWaiting={moveSlotToWaiting}
+                        />
+                      ))}
+                    </div>
+                  </div>
+                </article>
+              );
+            })}
           </section>
 
           <DragOverlay>
