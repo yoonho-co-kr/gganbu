@@ -12,7 +12,7 @@ import {
   useSensors,
 } from "@dnd-kit/core";
 import { CSS } from "@dnd-kit/utilities";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import { parseShareSnapshot } from "@/lib/share-snapshot";
 import type { CharacterSummary, ServerInfo } from "@/types/character";
@@ -26,6 +26,8 @@ type Party = {
   kind: PartyKind;
   slots: Array<CharacterSummary | null>;
 };
+
+type SlotMemoMap = Record<string, string>;
 
 type DragPayload =
   | {
@@ -51,13 +53,18 @@ type DropPayload =
 
 const SLOT_COUNT = 8;
 const STORAGE_KEY = "aion2-party-builder:v2";
-const PANEL_CLASS = "rounded-xl border border-slate-800 bg-slate-900/90 shadow-sm";
+const SLOT_MEMO_MAX_LENGTH = 80;
+const PANEL_CLASS = "";
 const INPUT_CLASS =
-  "h-10 rounded-md border border-slate-700 bg-slate-950 px-3 text-sm text-slate-100 placeholder:text-slate-500 outline-none transition focus:border-slate-500 focus:ring-2 focus:ring-slate-800";
+  "h-8 rounded-md border border-neutral-700 bg-neutral-950 px-3 text-sm text-neutral-100 placeholder:text-neutral-500 outline-none transition focus:border-neutral-500 focus:ring-2 focus:ring-neutral-800";
 const BUTTON_PRIMARY_CLASS =
-  "h-10 rounded-md bg-slate-100 px-4 text-sm font-medium text-slate-900 transition hover:bg-slate-200";
+  "h-8 rounded-md bg-neutral-100 px-4 text-sm font-medium text-neutral-900 transition hover:bg-neutral-200";
 const BUTTON_SECONDARY_CLASS =
-  "h-10 rounded-md border border-slate-700 bg-slate-900 px-4 text-sm font-medium text-slate-200 transition hover:bg-slate-800";
+  "h-8 rounded-md border border-neutral-700 bg-neutral-900 px-4 text-sm font-medium text-neutral-200 transition hover:bg-neutral-800";
+const BUTTON_BLUE_SECONDARY_CLASS =
+  "h-8 rounded-md border border-blue-500 bg-neutral-900 px-4 text-sm font-semibold text-blue-500 transition hover:bg-blue-500/10";
+const NUM_EMPHASIS_CLASS = "font-bold text-neutral-50";
+const NUM_BLUE_EMPHASIS_CLASS = "font-bold text-sky-100";
 
 function createParty(kind: PartyKind, index: number): Party {
   const kindName = kind === "rudra" ? "루드라" : "침식";
@@ -100,11 +107,17 @@ function calculatePartyAverage(slots: Array<CharacterSummary | null>) {
   };
 }
 
-function classInitial(className?: string) {
-  if (!className || className.trim().length === 0) {
-    return "?";
-  }
-  return className.trim().charAt(0);
+function getClassBadgeToneClass(className?: string) {
+  const normalized = className?.trim() ?? "";
+  if (normalized.includes("수호성")) return "border-blue-300 bg-blue-900/30 text-blue-300";
+  if (normalized.includes("검성")) return "border-sky-300 bg-sky-900/30 text-sky-300";
+  if (normalized.includes("살성")) return "border-green-300 bg-green-900/30 text-green-300";
+  if (normalized.includes("궁성")) return "border-lime-300 bg-lime-900/30 text-lime-300";
+  if (normalized.includes("호법")) return "border-orange-300 bg-orange-900/30 text-orange-300";
+  if (normalized.includes("치유")) return "border-yellow-300 bg-yellow-900/30 text-yellow-300";
+  if (normalized.includes("정령")) return "border-pink-300 bg-pink-900/30 text-pink-300";
+  if (normalized.includes("마도")) return "border-violet-300 bg-violet-900/30 text-violet-300";
+  return "border-neutral-700 bg-neutral-800 text-neutral-300";
 }
 
 function sameCharacter(a: CharacterSummary, b: CharacterSummary) {
@@ -113,6 +126,37 @@ function sameCharacter(a: CharacterSummary, b: CharacterSummary) {
 
 function characterKey(character: CharacterSummary) {
   return `${character.serverId}:${character.characterId}`;
+}
+
+function normalizeCharacterId(characterId: string) {
+  try {
+    return decodeURIComponent(characterId);
+  } catch {
+    return characterId;
+  }
+}
+
+function slotMemoKey(partyId: string, slotIndex: number) {
+  return `${partyId}:${slotIndex}`;
+}
+
+function parseSlotMemos(input: unknown): SlotMemoMap {
+  if (!input || typeof input !== "object") {
+    return {};
+  }
+
+  const next: SlotMemoMap = {};
+  for (const [key, value] of Object.entries(input as Record<string, unknown>)) {
+    if (typeof value !== "string") {
+      continue;
+    }
+    const normalized = value.slice(0, SLOT_MEMO_MAX_LENGTH);
+    if (normalized.length === 0) {
+      continue;
+    }
+    next[key] = normalized;
+  }
+  return next;
 }
 
 function copyParties(parties: Party[]): Party[] {
@@ -136,83 +180,121 @@ function clonePartiesFromSnapshot(parties: ShareSnapshot["parties"]): Party[] {
   }));
 }
 
+function mergeCharacterStats(base: CharacterSummary, fresh: CharacterSummary): CharacterSummary {
+  return {
+    ...base,
+    serverName: fresh.serverName || base.serverName,
+    classId: fresh.classId ?? base.classId,
+    className: fresh.className ?? base.className,
+    classKey: fresh.classKey ?? base.classKey,
+    classIconUrl: fresh.classIconUrl ?? base.classIconUrl,
+    itemLevel: fresh.itemLevel > 0 ? fresh.itemLevel : base.itemLevel,
+    combatPower: fresh.combatPower > 0 ? fresh.combatPower : base.combatPower,
+    source: fresh.source ?? base.source,
+  };
+}
+
 function CharacterCard({
   character,
   compact = false,
+  slotLayout = false,
+  dense = false,
+  actionRevealOnHover = false,
+  serverEmphasis = false,
+  surface = "default",
   assignmentStatus,
   disabled = false,
   actionButton,
 }: {
   character: CharacterSummary;
   compact?: boolean;
+  slotLayout?: boolean;
+  dense?: boolean;
+  actionRevealOnHover?: boolean;
+  serverEmphasis?: boolean;
+  surface?: "default" | "slot";
   assignmentStatus?: { rudra: boolean; erosion: boolean };
   disabled?: boolean;
   actionButton?: React.ReactNode;
 }) {
   return (
     <div
-      className={`min-h-40 w-full rounded-lg border border-slate-800 bg-slate-900/95 p-3 shadow-sm ${
+      className={`group/card ${dense ? "min-h-18 p-2" : "min-h-20 p-3"} w-full rounded-lg ${
+        surface === "slot" ? "border border-transparent bg-neutral-800/85" : "border border-neutral-800 bg-neutral-900/95"
+      } ${
         compact ? "" : "hover:shadow"
       } transition-shadow`}
     >
-      <div className="flex items-center gap-3">
-        <div className="h-11 w-11 overflow-hidden rounded-lg bg-slate-800">
-          {character.profileImageUrl ? (
-            // eslint-disable-next-line @next/next/no-img-element
-            <img
-              src={character.profileImageUrl}
-              alt={character.name}
-              className="h-full w-full object-cover"
-              loading="lazy"
-            />
-          ) : (
-            <div className="flex h-full w-full items-center justify-center text-xs text-slate-400">NO IMG</div>
-          )}
-        </div>
-
-        <div className="min-w-0 flex-1">
-          <p className="truncate text-sm font-medium text-slate-100">{character.name}</p>
-          <p className="truncate text-xs text-slate-400">{character.serverName}</p>
-          <div className="mt-1 flex items-center gap-1.5 text-[11px]">
-            <span className="rounded border border-slate-700 bg-slate-800 px-1.5 py-0.5 font-medium text-slate-300">
-              {character.className ?? "직업 미확인"}
+      {slotLayout ? (
+        <div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-2 gap-y-1">
+          <p className={`truncate font-bold text-neutral-100 ${dense ? "text-sm" : "text-md"}`}>
+            <span className="max-w-[8ch] truncate align-middle inline-block">{character.name}</span>
+            <span
+              className={`ml-1 align-middle ${
+                serverEmphasis ? "font-medium text-neutral-200" : "font-normal text-neutral-400"
+              } ${
+                serverEmphasis ? (dense ? "text-sm" : "text-md") : dense ? "text-[10px]" : "text-xs"
+              }`}
+            >
+              [{character.serverName}]
             </span>
-            <span className="text-slate-400">Lv.{character.level || 0}</span>
+          </p>
+          <div
+            className={`justify-self-end ${
+              actionRevealOnHover ? "opacity-0 pointer-events-none group-hover/card:opacity-100 group-hover/card:pointer-events-auto group-focus-within/card:opacity-100 group-focus-within/card:pointer-events-auto" : ""
+            } transition`}
+          >
+            {actionButton}
+          </div>
+          <div className="flex flex-col leading-tight">
+            <p className={`${dense ? "text-[10px]" : "text-[11px]"} text-sky-300`}>
+              전투력 <span className={NUM_BLUE_EMPHASIS_CLASS}>{formatNumber(character.combatPower)}</span>
+            </p>
+            <p className={`${dense ? "text-[10px]" : "text-[11px]"} text-neutral-300`}>
+              아이템레벨 <span className={NUM_EMPHASIS_CLASS}>{formatNumber(character.itemLevel)}</span>
+            </p>
+          </div>
+          <div
+            className={`${dense ? "w-12 h-5 text-[10px]" : "w-12 h-6 text-[11px]"} justify-center inline-flex shrink-0 items-center rounded-lg border px-2 font-semibold ${getClassBadgeToneClass(
+              character.className,
+            )}`}
+          >
+            {character.className ?? "직업 미확인"}
           </div>
         </div>
-
-        <div className="h-9 w-9 overflow-hidden rounded-lg border border-slate-700 bg-slate-800">
-          {character.classIconUrl ? (
-            // eslint-disable-next-line @next/next/no-img-element
-            <img
-              src={character.classIconUrl}
-              alt={character.className ?? "class icon"}
-              className="h-full w-full object-cover"
-              loading="lazy"
-            />
-          ) : (
-            <div className="flex h-full w-full items-center justify-center text-xs font-bold text-slate-300">
-              {classInitial(character.className)}
+      ) : (
+        <div>
+          <div className="flex items-center gap-2">
+            <div className="min-w-0 flex-1">
+              <p className="max-w-[8ch] truncate text-md font-bold text-neutral-100">{character.name}</p>
+              <p className="truncate text-xs text-neutral-400">{character.serverName}</p>
             </div>
-          )}
-        </div>
-      </div>
+            <div
+              className={`w-12 justify-center inline-flex h-9 shrink-0 items-center rounded-lg border px-2 text-[11px] font-semibold ${getClassBadgeToneClass(
+                character.className,
+              )}`}
+            >
+              {character.className ?? "직업 미확인"}
+            </div>
+          </div>
 
-      <div className="mt-2 grid grid-cols-2 gap-2 text-[11px] text-slate-400">
-        <div className="rounded-md border border-slate-700 bg-slate-800 px-2 py-1">
-          IL <span className="font-medium text-slate-100">{formatNumber(character.itemLevel)}</span>
+          <div className="mt-2 grid grid-cols-2 gap-2 text-[11px] text-neutral-400">
+            <div className="rounded-md border border-neutral-700 bg-neutral-800 px-2 py-1">
+              IL <span className={NUM_EMPHASIS_CLASS}>{formatNumber(character.itemLevel)}</span>
+            </div>
+            <div className="rounded-md border border-sky-700/50 bg-sky-900/20 px-2 py-1 text-sky-300">
+              CP <span className={NUM_BLUE_EMPHASIS_CLASS}>{formatNumber(character.combatPower)}</span>
+            </div>
+          </div>
         </div>
-        <div className="rounded-md border border-slate-700 bg-slate-800 px-2 py-1">
-          CP <span className="font-medium text-slate-100">{formatNumber(character.combatPower)}</span>
-        </div>
-      </div>
+      )}
 
       {assignmentStatus ? (
-        <div className="mt-2 flex items-center gap-1.5 text-[11px]">
+        <div className={`mt-2 flex items-center gap-1.5 ${dense ? "text-[10px]" : "text-[11px]"}`}>
           <span
             className={`rounded px-1.5 py-0.5 font-semibold ${
               assignmentStatus.rudra
-                ? "bg-slate-800 text-slate-500 line-through"
+                ? "bg-neutral-800 text-neutral-500 line-through"
                 : "border border-amber-700/60 bg-amber-900/40 text-amber-200"
             }`}
           >
@@ -221,7 +303,7 @@ function CharacterCard({
           <span
             className={`rounded px-1.5 py-0.5 font-semibold ${
               assignmentStatus.erosion
-                ? "bg-slate-800 text-slate-500 line-through"
+                ? "bg-neutral-800 text-neutral-500 line-through"
                 : "border border-indigo-700/60 bg-indigo-900/40 text-indigo-200"
             }`}
           >
@@ -231,7 +313,7 @@ function CharacterCard({
         </div>
       ) : null}
 
-      {actionButton ? <div className="mt-2 flex justify-end">{actionButton}</div> : null}
+      {!slotLayout && actionButton ? <div className="mt-2 flex justify-end">{actionButton}</div> : null}
     </div>
   );
 }
@@ -266,11 +348,15 @@ function PartySlot({
   partyId,
   slotIndex,
   character,
+  memoValue = "",
+  onMemoChange,
   onMoveToWaiting,
 }: {
   partyId: string;
   slotIndex: number;
   character: CharacterSummary | null;
+  memoValue?: string;
+  onMemoChange?: (partyId: string, slotIndex: number, memo: string) => void;
   onMoveToWaiting?: (partyId: string, slotIndex: number, character: CharacterSummary) => void;
 }) {
   const { isOver, setNodeRef } = useDroppable({
@@ -282,17 +368,11 @@ function PartySlot({
     } satisfies DropPayload,
   });
 
-  const slotLabel = slotIndex < 4 ? `1팀-${slotIndex + 1}` : `2팀-${slotIndex - 3}`;
-
   return (
     <div
       ref={setNodeRef}
-      className={`rounded-xl border p-2 ${
-        isOver ? "border-slate-500 bg-slate-800" : "border-slate-700 bg-slate-900/60"
-      }`}
+      className={`group/slot rounded-xl ${isOver ? "bg-neutral-800 ring-1 ring-neutral-600" : "bg-neutral-900/60"}`}
     >
-      <p className="mb-1 text-[11px] font-semibold text-slate-400">{slotLabel}</p>
-
       {character ? (
         <div>
           <DraggableCard
@@ -307,6 +387,10 @@ function PartySlot({
             <CharacterCard
               character={character}
               compact
+              slotLayout
+              dense
+              surface="slot"
+              actionRevealOnHover
               actionButton={
                 <button
                   type="button"
@@ -314,7 +398,7 @@ function PartySlot({
                   onClick={() => onMoveToWaiting?.(partyId, slotIndex, character)}
                   aria-label="대기로 이동"
                   title="대기로 이동"
-                  className="inline-flex rounded-md border border-slate-600 bg-slate-900/95 p-1.5 text-slate-300 transition hover:bg-slate-800"
+                  className="inline-flex rounded-md border border-neutral-600 bg-neutral-900 p-1 text-neutral-300 transition hover:bg-neutral-800"
                 >
                   <svg className="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor">
                     <path
@@ -330,8 +414,15 @@ function PartySlot({
           </DraggableCard>
         </div>
       ) : (
-        <div className="h-40 flex items-center justify-center rounded-lg border border-dashed border-slate-600 text-xs text-slate-400">
-          드롭
+        <div className="h-18 rounded-lg border border-dashed border-neutral-600/70 bg-neutral-800/10 p-1.5">
+          <textarea
+            value={memoValue}
+            onPointerDown={(event) => event.stopPropagation()}
+            onChange={(event) => onMemoChange?.(partyId, slotIndex, event.target.value)}
+            maxLength={SLOT_MEMO_MAX_LENGTH}
+            placeholder="검색이 어려우면 메모"
+            className="h-full w-full resize-none rounded-md border border-transparent bg-transparent px-1.5 py-1 text-[11px] text-neutral-300 outline-none placeholder:text-neutral-500 focus:border-neutral-600 focus:bg-neutral-900/30"
+          />
         </div>
       )}
     </div>
@@ -354,6 +445,7 @@ export default function PartyBuilderPage({
     parsedInitialSnapshot ? clonePartiesFromSnapshot(parsedInitialSnapshot.parties) : createDefaultParties(),
   );
   const [waitingList, setWaitingList] = useState<CharacterSummary[]>(() => parsedInitialSnapshot?.waitingList ?? []);
+  const [slotMemos, setSlotMemos] = useState<SlotMemoMap>({});
   const [servers, setServers] = useState<ServerInfo[]>([]);
 
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -368,6 +460,9 @@ export default function PartyBuilderPage({
   const [shareLink, setShareLink] = useState("");
   const [shareError, setShareError] = useState("");
   const [shareCopied, setShareCopied] = useState(false);
+  const [specRefreshLoading, setSpecRefreshLoading] = useState(false);
+  const [specRefreshMessage, setSpecRefreshMessage] = useState("");
+  const [specRefreshError, setSpecRefreshError] = useState("");
 
   const [activeDrag, setActiveDrag] = useState<DragPayload | null>(null);
 
@@ -425,21 +520,23 @@ export default function PartyBuilderPage({
         return;
       }
 
-      const parsed = parseShareSnapshot(JSON.parse(raw));
+      const parsedRaw = JSON.parse(raw);
+      const parsed = parseShareSnapshot(parsedRaw);
       if (!parsed) {
         return;
       }
 
       setParties(clonePartiesFromSnapshot(parsed.parties));
       setWaitingList(parsed.waitingList);
+      setSlotMemos(parseSlotMemos((parsedRaw as { slotMemos?: unknown }).slotMemos));
     } catch {
       // Ignore malformed local storage.
     }
   }, [hasInitialSnapshot]);
 
   useEffect(() => {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify({ parties, waitingList }));
-  }, [parties, waitingList]);
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ parties, waitingList, slotMemos }));
+  }, [parties, waitingList, slotMemos]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -477,6 +574,10 @@ export default function PartyBuilderPage({
       }
       return previous.filter((party) => party.id !== partyId);
     });
+    setSlotMemos((previous) => {
+      const nextEntries = Object.entries(previous).filter(([key]) => !key.startsWith(`${partyId}:`));
+      return Object.fromEntries(nextEntries);
+    });
   };
 
   const clearParty = (partyId: string) => {
@@ -488,8 +589,12 @@ export default function PartyBuilderPage({
               slots: Array.from({ length: SLOT_COUNT }, () => null),
             }
           : party,
-      ),
+        ),
     );
+    setSlotMemos((previous) => {
+      const nextEntries = Object.entries(previous).filter(([key]) => !key.startsWith(`${partyId}:`));
+      return Object.fromEntries(nextEntries);
+    });
   };
 
   const runSearchInModal = async (event: React.FormEvent<HTMLFormElement>) => {
@@ -594,6 +699,111 @@ export default function PartyBuilderPage({
     }
   };
 
+  const refreshAllCharacterSpecs = async () => {
+    if (specRefreshLoading) {
+      return;
+    }
+
+    const uniqueMap = new Map<string, CharacterSummary>();
+
+    for (const character of waitingList) {
+      uniqueMap.set(characterKey(character), character);
+    }
+    for (const party of parties) {
+      for (const character of party.slots) {
+        if (!character) {
+          continue;
+        }
+        uniqueMap.set(characterKey(character), character);
+      }
+    }
+
+    const targets = Array.from(uniqueMap.values());
+    if (targets.length === 0) {
+      setSpecRefreshError("재조회할 캐릭터가 없습니다.");
+      setSpecRefreshMessage("");
+      return;
+    }
+
+    setSpecRefreshLoading(true);
+    setSpecRefreshError("");
+    setSpecRefreshMessage("");
+
+    try {
+      const refreshedEntries = await Promise.all(
+        targets.map(async (target) => {
+          const params = new URLSearchParams({
+            name: target.name,
+            serverId: String(target.serverId),
+            size: "20",
+          });
+
+          try {
+            const response = await fetch(`/api/characters/search?${params.toString()}`, {
+              cache: "no-store",
+            });
+            if (!response.ok) {
+              return null;
+            }
+
+            const payload = (await response.json()) as { items?: CharacterSummary[] };
+            const items = Array.isArray(payload.items) ? payload.items : [];
+            if (items.length === 0) {
+              return null;
+            }
+
+            const targetCharacterId = normalizeCharacterId(target.characterId);
+            const exact =
+              items.find(
+                (item) =>
+                  item.serverId === target.serverId &&
+                  normalizeCharacterId(item.characterId) === targetCharacterId,
+              ) ??
+              items.find((item) => item.serverId === target.serverId && item.name === target.name);
+
+            if (!exact) {
+              return null;
+            }
+
+            return {
+              key: characterKey(target),
+              character: mergeCharacterStats(target, exact),
+            };
+          } catch {
+            return null;
+          }
+        }),
+      );
+
+      const updates = new Map<string, CharacterSummary>();
+      for (const entry of refreshedEntries) {
+        if (!entry) {
+          continue;
+        }
+        updates.set(entry.key, entry.character);
+      }
+
+      if (updates.size === 0) {
+        setSpecRefreshError("재조회 결과를 찾지 못했습니다.");
+        return;
+      }
+
+      setWaitingList((previous) => previous.map((item) => updates.get(characterKey(item)) ?? item));
+      setParties((previous) =>
+        previous.map((party) => ({
+          ...party,
+          slots: party.slots.map((slot) => (slot ? updates.get(characterKey(slot)) ?? slot : null)),
+        })),
+      );
+
+      setSpecRefreshMessage(`${targets.length.toLocaleString("ko-KR")}명 중 ${updates.size.toLocaleString("ko-KR")}명 재조회 완료`);
+    } catch {
+      setSpecRefreshError("스펙 재조회 중 오류가 발생했습니다.");
+    } finally {
+      setSpecRefreshLoading(false);
+    }
+  };
+
   const removeFromWaitingList = (character: CharacterSummary) => {
     setWaitingList((previous) => previous.filter((entry) => !sameCharacter(entry, character)));
   };
@@ -609,6 +819,22 @@ export default function PartyBuilderPage({
 
   const getAssignmentStatus = (character: CharacterSummary) =>
     assignmentMap.get(characterKey(character)) ?? { rudra: false, erosion: false };
+
+  const orderedWaitingList = useMemo(() => {
+    const pending: CharacterSummary[] = [];
+    const completed: CharacterSummary[] = [];
+
+    for (const character of waitingList) {
+      const status = assignmentMap.get(characterKey(character));
+      if (status?.rudra && status?.erosion) {
+        completed.push(character);
+      } else {
+        pending.push(character);
+      }
+    }
+
+    return [...pending, ...completed];
+  }, [waitingList, assignmentMap]);
 
   const removeCharacterFromKindSlots = (
     mutableParties: Party[],
@@ -634,6 +860,43 @@ export default function PartyBuilderPage({
     }
   };
 
+  const clearSlotMemo = (partyId: string, slotIndex: number) => {
+    const key = slotMemoKey(partyId, slotIndex);
+    setSlotMemos((previous) => {
+      if (!(key in previous)) {
+        return previous;
+      }
+      const next = { ...previous };
+      delete next[key];
+      return next;
+    });
+  };
+
+  const updateSlotMemo = (partyId: string, slotIndex: number, memo: string) => {
+    const key = slotMemoKey(partyId, slotIndex);
+    const normalized = memo.slice(0, SLOT_MEMO_MAX_LENGTH);
+
+    setSlotMemos((previous) => {
+      if (normalized.length === 0) {
+        if (!(key in previous)) {
+          return previous;
+        }
+        const next = { ...previous };
+        delete next[key];
+        return next;
+      }
+
+      if (previous[key] === normalized) {
+        return previous;
+      }
+
+      return {
+        ...previous,
+        [key]: normalized,
+      };
+    });
+  };
+
   const placeCharacterInSlot = (targetPartyId: string, targetSlotIndex: number, character: CharacterSummary) => {
     setParties((previous) => {
       const next = copyParties(previous);
@@ -646,6 +909,7 @@ export default function PartyBuilderPage({
       party.slots[targetSlotIndex] = character;
       return next;
     });
+    clearSlotMemo(targetPartyId, targetSlotIndex);
   };
 
   const moveSlotCharacter = (
@@ -690,6 +954,7 @@ export default function PartyBuilderPage({
 
       return next;
     });
+    clearSlotMemo(targetPartyId, targetSlotIndex);
   };
 
   const clearSlot = (partyId: string, slotIndex: number) => {
@@ -763,34 +1028,42 @@ export default function PartyBuilderPage({
   };
 
   return (
-    <div className="min-h-screen bg-slate-950">
-      <main className="mx-auto flex w-full max-w-[1440px] flex-col gap-4 p-4 pb-10 md:p-8">
-        <section className={`${PANEL_CLASS} p-5`}>
+    <div className="h-screen overflow-hidden bg-neutral-950 tabular-nums">
+      <main className="mx-auto h-full w-full max-w-[1440px] overflow-hidden p-4 md:p-6">
+        <DndContext
+          sensors={sensors}
+          onDragStart={handleDragStart}
+          onDragEnd={handleDragEnd}
+          onDragCancel={() => setActiveDrag(null)}
+        >
+          <div className="grid h-full min-h-0 grid-cols-1 gap-4 xl:grid-cols-[260px_minmax(0,1fr)]">
+            <aside className="flex h-full min-h-0 flex-col gap-4">
+        <section className={`${PANEL_CLASS}`}>
           <div className="flex flex-wrap items-end justify-between gap-4">
             <div>
-              <p className="text-xs font-medium uppercase tracking-[0.18em] text-slate-400">AION2 PARTY BUILDER</p>
-              <h1 className="mt-1 text-2xl font-semibold text-slate-100 md:text-3xl">깐부 8인 파티 편성</h1>
-              <p className="mt-2 text-sm text-slate-400 leading-relaxed">
+              <p className="text-xs font-medium uppercase tracking-[0.18em] text-neutral-400">AION2 PARTY BUILDER</p>
+              <h1 className="mt-1 text-2xl font-semibold text-neutral-100 md:text-3xl">깐부 8인 파티 편성</h1>
+              <p className="mt-2 text-xs text-neutral-400 leading-relaxed">
                 검색은 모달에서 수행하고, 선택한 캐릭터를 대기 목록에 추가한 뒤 드래그앤드랍으로 파티에 배치하세요.
               </p>
               {sharedId ? (
                 <p className="mt-2 text-xs text-sky-300">
                   공유 링크로 불러온 상태입니다. ID: {sharedId}
-                  {sharedCreatedText ? <span className="ml-2 text-slate-400">생성: {sharedCreatedText}</span> : null}
+                  {sharedCreatedText ? <span className="ml-2 text-neutral-400">생성: {sharedCreatedText}</span> : null}
                 </p>
               ) : null}
             </div>
 
-            <div className="rounded-md border border-slate-700 bg-slate-800 px-3 py-2 text-xs text-slate-300">
-              루드라: <strong className="text-slate-100">{rudraPartyCount}</strong>
-              <span className="mx-2 text-slate-500">|</span>
-              침식: <strong className="text-slate-100">{erosionPartyCount}</strong>
-              <span className="mx-2 text-slate-500">|</span>
-              배치 인원: <strong className="text-slate-100">{assignedCount}</strong>
+            <div className="rounded-md border border-neutral-700 bg-neutral-800 px-3 py-2 text-xs text-neutral-300">
+              루드라: <strong className={NUM_EMPHASIS_CLASS}>{rudraPartyCount}</strong>
+              <span className="mx-2 text-neutral-500">|</span>
+              침식: <strong className={NUM_EMPHASIS_CLASS}>{erosionPartyCount}</strong>
+              <span className="mx-2 text-neutral-500">|</span>
+              배치 인원: <strong className={NUM_EMPHASIS_CLASS}>{assignedCount}</strong>
             </div>
           </div>
 
-          <div className="mt-4 grid grid-cols-1 gap-2 md:grid-cols-[180px_180px_180px_180px_1fr]">
+          <div className="mt-4 grid grid-cols-2 gap-2">
             <button
               type="button"
               onClick={() => {
@@ -813,6 +1086,15 @@ export default function PartyBuilderPage({
 
             <button
               type="button"
+              onClick={() => void refreshAllCharacterSpecs()}
+              disabled={specRefreshLoading}
+              className={`${BUTTON_BLUE_SECONDARY_CLASS} col-span-2 disabled:cursor-not-allowed disabled:opacity-50`}
+            >
+              {specRefreshLoading ? "스펙 재조회중..." : "스펙 전체 재조회"}
+            </button>
+
+            <button
+              type="button"
               onClick={() => addParty("rudra")}
               className={BUTTON_SECONDARY_CLASS}
             >
@@ -827,42 +1109,37 @@ export default function PartyBuilderPage({
               + 침식 파티
             </button>
 
-            <div className="flex items-center rounded-md border border-slate-700 bg-slate-800 px-3 text-xs text-slate-300">
-              대기 목록: <strong className="ml-1 text-slate-100">{waitingList.length}</strong>
+            <div className="col-span-2 flex items-center rounded-md border border-neutral-700 bg-neutral-800 px-3 text-xs text-neutral-300">
+              대기 목록: <strong className={`ml-1 ${NUM_EMPHASIS_CLASS}`}>{waitingList.length}</strong>
             </div>
           </div>
 
           {shareLink ? (
-            <div className="mt-2 grid grid-cols-1 gap-2 md:grid-cols-[1fr_120px]">
+            <div className="mt-2 flex gap-2">
               <input readOnly value={shareLink} className={INPUT_CLASS} />
               <button
                 type="button"
                 onClick={() => void copyShareLink()}
-                className={`${BUTTON_SECONDARY_CLASS} ${shareCopied ? "border-emerald-700 text-emerald-300" : ""}`}
+                className={`${BUTTON_SECONDARY_CLASS} ${shareCopied ? "border-emerald-700/60 bg-emerald-900/40 text-emerald-200" : ""}`}
               >
                 {shareCopied ? "복사됨" : "링크 복사"}
               </button>
             </div>
           ) : null}
           {shareError ? <p className="mt-2 text-sm text-rose-400">{shareError}</p> : null}
+          {specRefreshMessage ? <p className="mt-2 text-xs text-emerald-300">{specRefreshMessage}</p> : null}
+          {specRefreshError ? <p className="mt-2 text-xs text-rose-400">{specRefreshError}</p> : null}
         </section>
-
-        <DndContext
-          sensors={sensors}
-          onDragStart={handleDragStart}
-          onDragEnd={handleDragEnd}
-          onDragCancel={() => setActiveDrag(null)}
-        >
-          <section className={`${PANEL_CLASS} p-4`}>
-            <div className="mb-3 flex items-center justify-between">
-              <h2 className="text-base font-medium text-slate-100">대기 목록</h2>
-              <p className="text-xs text-slate-400">칩은 구분별 배치 상태를 표시하며, 둘 다 배치되면 카드가 비활성화됩니다.</p>
+          <section className={`${PANEL_CLASS} min-h-0 flex flex-1 flex-col`}>
+            <div className="mb-3 flex flex-col">
+              <h2 className="text-base font-medium text-neutral-100">대기 목록</h2>
+              <p className="text-xs text-neutral-400">칩은 구분별 배치 상태를 표시하며, 둘 다 배치되면 카드가 비활성화됩니다.</p>
             </div>
 
             <WaitingDropZone>
               {waitingList.length > 0 ? (
-                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-4">
-                  {waitingList.map((character) => (
+                <div className="grid grid-cols-1 gap-2">
+                  {orderedWaitingList.map((character) => (
                     <div key={character.id}>
                       {(() => {
                         const status = getAssignmentStatus(character);
@@ -874,7 +1151,7 @@ export default function PartyBuilderPage({
                             onClick={() => removeFromWaitingList(character)}
                             aria-label="대기목록 제거"
                             title="대기목록 제거"
-                            className="inline-flex rounded-md border border-slate-600 bg-slate-900/95 p-1.5 text-slate-300 transition hover:bg-slate-800"
+                            className="inline-flex rounded-md border border-neutral-600 bg-neutral-900 p-1.5 text-neutral-300 transition hover:bg-neutral-800"
                           >
                             <svg className="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor">
                               <path
@@ -892,6 +1169,8 @@ export default function PartyBuilderPage({
                             <div className="cursor-not-allowed opacity-55">
                               <CharacterCard
                                 character={character}
+                                slotLayout
+                                dense
                                 assignmentStatus={status}
                                 disabled
                                 actionButton={removeButton}
@@ -905,7 +1184,13 @@ export default function PartyBuilderPage({
                             id={`waiting-${character.id}`}
                             payload={{ origin: "waiting", character }}
                           >
-                            <CharacterCard character={character} assignmentStatus={status} actionButton={removeButton} />
+                            <CharacterCard
+                              character={character}
+                              slotLayout
+                              dense
+                              assignmentStatus={status}
+                              actionButton={removeButton}
+                            />
                           </DraggableCard>
                         );
                       })()}
@@ -913,14 +1198,17 @@ export default function PartyBuilderPage({
                   ))}
                 </div>
               ) : (
-                <div className="rounded-xl border border-dashed border-slate-600 bg-slate-800 px-4 py-8 text-center text-sm text-slate-400">
+                <div className="rounded-xl border border-dashed border-neutral-600 bg-neutral-800 px-4 py-8 text-center text-sm text-neutral-400">
                   모달에서 캐릭터를 검색 후 대기 목록에 추가하세요.
                 </div>
               )}
             </WaitingDropZone>
           </section>
+            </aside>
 
-          <section className="grid grid-cols-1 gap-4 xl:grid-cols-2">
+          <section className="min-h-0 overflow-y-auto pr-1 space-y-3 scrollbar-neutral">
+            <h2 className="text-base font-medium text-neutral-100">파티</h2>
+            <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
             {parties.map((party) => {
               const teamOneSlots = party.slots.slice(0, 4);
               const teamTwoSlots = party.slots.slice(4);
@@ -929,8 +1217,8 @@ export default function PartyBuilderPage({
               const fullAverage = calculatePartyAverage(party.slots);
 
               return (
-                <article key={party.id} className={`${PANEL_CLASS} p-4`}>
-                  <div className="mb-3 flex items-center justify-between gap-3">
+                <article key={party.id} className="rounded-xl border border-neutral-800 bg-neutral-900/90 shadow-sm p-4">
+                  <div className="mb-3 flex flex-nowrap items-center gap-2 overflow-x-auto pb-1">
                     <input
                       value={party.name}
                       onChange={(event) => {
@@ -939,21 +1227,30 @@ export default function PartyBuilderPage({
                           previous.map((entry) => (entry.id === party.id ? { ...entry, name: nextName } : entry)),
                         );
                       }}
-                      className={INPUT_CLASS}
+                      className={`${INPUT_CLASS} w-24 shrink-0`}
                     />
                     <span
-                      className={`rounded-md px-2 py-1 text-xs font-semibold ${
+                      className={`h-8 inline-flex items-center rounded-md px-2 text-xs font-semibold ${
                         party.kind === "rudra" ? "bg-amber-900/40 text-amber-200" : "bg-indigo-900/40 text-indigo-200"
-                      }`}
+                      } shrink-0 whitespace-nowrap`}
                     >
                       {party.kind === "rudra" ? "루드라" : "침식"}
                     </span>
+                    <div className="h-8 shrink-0 whitespace-nowrap inline-flex items-center rounded-md border border-neutral-700 bg-neutral-800 px-2 text-[11px] font-medium text-neutral-300">
+                      전체 8인 평균 (<span className={NUM_EMPHASIS_CLASS}>{fullAverage.memberCount}</span>/8)
+                      <span className="mx-1 text-neutral-400">|</span>
+                      IL <span className={NUM_EMPHASIS_CLASS}>{formatAverage(fullAverage.itemLevelAverage)}</span>
+                      <span className="mx-1 text-neutral-400">|</span>
+                      <span className="text-sky-300">
+                        CP <span className={NUM_BLUE_EMPHASIS_CLASS}>{formatAverage(fullAverage.combatPowerAverage)}</span>
+                      </span>
+                    </div>
 
-                    <div className="flex items-center gap-2">
+                    <div className="ml-auto flex shrink-0 items-center gap-1.5">
                       <button
                         type="button"
                         onClick={() => clearParty(party.id)}
-                        className="rounded-md border border-slate-600 px-2.5 py-1.5 text-xs font-medium text-slate-300 transition hover:bg-slate-800"
+                        className="h-8 inline-flex items-center rounded-md border border-neutral-600 px-2 text-[11px] font-medium text-neutral-300 transition hover:bg-neutral-800"
                       >
                         비우기
                       </button>
@@ -961,154 +1258,188 @@ export default function PartyBuilderPage({
                         type="button"
                         onClick={() => removeParty(party.id)}
                         disabled={parties.length <= 1}
-                        className="rounded-md border border-slate-600 px-2.5 py-1.5 text-xs font-medium text-slate-300 transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-40"
+                        className="h-8 inline-flex items-center rounded-md border border-neutral-600 px-2 text-[11px] font-medium text-neutral-300 transition hover:bg-neutral-800 disabled:cursor-not-allowed disabled:opacity-40"
                       >
                         삭제
                       </button>
                     </div>
                   </div>
 
-                  <div className="mb-3 grid grid-cols-1 gap-2 lg:grid-cols-3">
-                    <div className="rounded-md border border-slate-700 bg-slate-800/70 px-3 py-2 text-xs text-slate-300">
-                      <p className="font-semibold text-slate-200">1팀 평균 ({teamOneAverage.memberCount}/4)</p>
-                      <p className="mt-1">IL {formatAverage(teamOneAverage.itemLevelAverage)}</p>
-                      <p>CP {formatAverage(teamOneAverage.combatPowerAverage)}</p>
-                    </div>
-
-                    <div className="rounded-md border border-slate-700 bg-slate-800/70 px-3 py-2 text-xs text-slate-300">
-                      <p className="font-semibold text-slate-200">2팀 평균 ({teamTwoAverage.memberCount}/4)</p>
-                      <p className="mt-1">IL {formatAverage(teamTwoAverage.itemLevelAverage)}</p>
-                      <p>CP {formatAverage(teamTwoAverage.combatPowerAverage)}</p>
-                    </div>
-
-                    <div className="rounded-md border border-slate-600 bg-slate-800 px-3 py-2 text-xs text-slate-200">
-                      <p className="font-semibold">전체 8인 평균 ({fullAverage.memberCount}/8)</p>
-                      <p className="mt-1">IL {formatAverage(fullAverage.itemLevelAverage)}</p>
-                      <p>CP {formatAverage(fullAverage.combatPowerAverage)}</p>
-                    </div>
-                  </div>
-
                   <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
-                    <div className="space-y-2">
-                      <p className="text-xs font-semibold uppercase tracking-wider text-slate-400">1팀</p>
-                      {teamOneSlots.map((character, index) => (
-                        <PartySlot
-                          key={`${party.id}-slot-${index}`}
-                          partyId={party.id}
-                          slotIndex={index}
-                          character={character}
-                          onMoveToWaiting={moveSlotToWaiting}
-                        />
-                      ))}
+                    <div className="rounded-xl border border-neutral-700/80 bg-neutral-900/60 p-2.5">
+                      <div className="flex items-center justify-between gap-2">
+                        <p className="text-xs font-semibold tracking-wider text-neutral-400">
+                          1팀 평균 (<span className={NUM_EMPHASIS_CLASS}>{teamOneAverage.memberCount}</span>/4)
+                        </p>
+                        <p className="text-[11px] text-neutral-300">
+                          IL <span className={NUM_EMPHASIS_CLASS}>{formatAverage(teamOneAverage.itemLevelAverage)}</span>
+                          <span className="mx-1 text-neutral-400">|</span>
+                          <span className="text-sky-300">
+                            CP <span className={NUM_BLUE_EMPHASIS_CLASS}>{formatAverage(teamOneAverage.combatPowerAverage)}</span>
+                          </span>
+                        </p>
+                      </div>
+                      <div className="mt-2 space-y-2">
+                        {teamOneSlots.map((character, index) => (
+                          <PartySlot
+                            key={`${party.id}-slot-${index}`}
+                            partyId={party.id}
+                            slotIndex={index}
+                            character={character}
+                            memoValue={slotMemos[slotMemoKey(party.id, index)] ?? ""}
+                            onMemoChange={updateSlotMemo}
+                            onMoveToWaiting={moveSlotToWaiting}
+                          />
+                        ))}
+                      </div>
                     </div>
 
-                    <div className="space-y-2">
-                      <p className="text-xs font-semibold uppercase tracking-wider text-slate-400">2팀</p>
-                      {teamTwoSlots.map((character, index) => (
-                        <PartySlot
-                          key={`${party.id}-slot-${index + 4}`}
-                          partyId={party.id}
-                          slotIndex={index + 4}
-                          character={character}
-                          onMoveToWaiting={moveSlotToWaiting}
-                        />
-                      ))}
+                    <div className="rounded-xl border border-neutral-700/80 bg-neutral-900/60 p-2.5">
+                      <div className="flex items-center justify-between gap-2">
+                        <p className="text-xs font-semibold tracking-wider text-neutral-400">
+                          2팀 평균 (<span className={NUM_EMPHASIS_CLASS}>{teamTwoAverage.memberCount}</span>/4)
+                        </p>
+                        <p className="text-[11px] text-neutral-300">
+                          IL <span className={NUM_EMPHASIS_CLASS}>{formatAverage(teamTwoAverage.itemLevelAverage)}</span>
+                          <span className="mx-1 text-neutral-400">|</span>
+                          <span className="text-sky-300">
+                            CP <span className={NUM_BLUE_EMPHASIS_CLASS}>{formatAverage(teamTwoAverage.combatPowerAverage)}</span>
+                          </span>
+                        </p>
+                      </div>
+                      <div className="mt-2 space-y-2">
+                        {teamTwoSlots.map((character, index) => (
+                          <PartySlot
+                            key={`${party.id}-slot-${index + 4}`}
+                            partyId={party.id}
+                            slotIndex={index + 4}
+                            character={character}
+                            memoValue={slotMemos[slotMemoKey(party.id, index + 4)] ?? ""}
+                            onMemoChange={updateSlotMemo}
+                            onMoveToWaiting={moveSlotToWaiting}
+                          />
+                        ))}
+                      </div>
                     </div>
                   </div>
                 </article>
               );
             })}
+            </div>
           </section>
+          </div>
 
           <DragOverlay>
-            {activeDrag ? <CharacterCard character={activeDrag.character} /> : null}
+            {activeDrag ? <CharacterCard character={activeDrag.character} compact slotLayout dense surface="slot" /> : null}
           </DragOverlay>
         </DndContext>
       </main>
 
       {isModalOpen ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-[1px]">
-          <div className="w-full max-w-4xl rounded-xl border border-slate-800 bg-slate-900 p-5 shadow-xl">
+          <div className="w-full max-w-4xl rounded-xl border border-neutral-800 bg-neutral-900 p-5 shadow-xl">
             <div className="mb-4 flex items-center justify-between">
-              <h2 className="text-lg font-semibold text-slate-100">캐릭터 검색</h2>
+              <h2 className="text-lg font-semibold text-neutral-100">캐릭터 검색</h2>
               <button
                 type="button"
                 onClick={() => setIsModalOpen(false)}
-                className="rounded-md border border-slate-600 px-3 py-1.5 text-xs font-medium text-slate-300 transition hover:bg-slate-800"
+                className="rounded-md border border-neutral-600 px-3 py-1.5 text-xs font-medium text-neutral-300 transition hover:bg-neutral-800"
               >
                 닫기
               </button>
             </div>
 
-            <form onSubmit={runSearchInModal} className="grid grid-cols-1 gap-3 md:grid-cols-[1fr_220px_120px]">
-              <input
-                value={modalQuery}
-                onChange={(event) => setModalQuery(event.target.value)}
-                placeholder="캐릭터명"
-                className={INPUT_CLASS}
-              />
+            <div className="grid h-[78vh] min-h-0 grid-cols-1 gap-4 lg:grid-cols-[280px_minmax(0,1fr)]">
+              <aside className="min-h-0 space-y-3">
+                <div>
+                  <p className="text-xs font-semibold uppercase tracking-wide text-neutral-400">검색 조건</p>
+                </div>
+                <form onSubmit={runSearchInModal} className="grid grid-cols-[minmax(0,1fr)_140px] gap-2">
+                  <input
+                    value={modalQuery}
+                    onChange={(event) => setModalQuery(event.target.value)}
+                    placeholder="캐릭터명"
+                    className={INPUT_CLASS}
+                  />
 
-              <select
-                value={modalServerId}
-                onChange={(event) => setModalServerId(event.target.value)}
-                className={INPUT_CLASS}
-              >
-                <option value="">전체 서버</option>
-                {servers.map((server) => (
-                  <option key={server.serverId} value={server.serverId}>
-                    {server.serverName}
-                  </option>
-                ))}
-              </select>
+                  <select
+                    value={modalServerId}
+                    onChange={(event) => setModalServerId(event.target.value)}
+                    className={INPUT_CLASS}
+                  >
+                    <option value="">전체 서버</option>
+                    {servers.map((server) => (
+                      <option key={server.serverId} value={server.serverId}>
+                        {server.serverName}
+                      </option>
+                    ))}
+                  </select>
 
-              <button
-                type="submit"
-                disabled={modalLoading}
-                className={`${BUTTON_PRIMARY_CLASS} disabled:cursor-not-allowed disabled:bg-slate-700 disabled:text-slate-400`}
-              >
-                {modalLoading ? "검색중..." : "검색"}
-              </button>
-            </form>
+                  <button
+                    type="submit"
+                    disabled={modalLoading}
+                    className={`${BUTTON_PRIMARY_CLASS} col-span-2 w-full disabled:cursor-not-allowed disabled:bg-neutral-700 disabled:text-neutral-400`}
+                  >
+                    {modalLoading ? "검색중..." : "검색"}
+                  </button>
+                </form>
 
-            {modalSource ? <p className="mt-2 text-xs text-slate-400">검색 소스: {modalSource}</p> : null}
-            <p className="mt-1 text-xs text-slate-400">검색 결과에서 선택한 캐릭터만 대기 목록에 추가됩니다.</p>
-            {modalError ? <p className="mt-2 text-sm text-rose-600">{modalError}</p> : null}
+                <div className="rounded-lg border border-neutral-700 bg-neutral-800/60 px-3 py-2 text-xs text-neutral-400">
+                  {modalSource ? <p>검색 소스: {modalSource}</p> : <p>검색 소스: 대기</p>}
+                  <p className="mt-1">결과에서 선택한 캐릭터만 대기 목록에 추가됩니다.</p>
+                </div>
 
-            <div className="mt-4 max-h-[55vh] overflow-y-auto rounded-lg border border-slate-700">
-              {modalResults.length > 0 ? (
-                <div className="grid grid-cols-1 gap-2 p-3 lg:grid-cols-2">
-                  {modalResults.map((character) => {
-                    const inWaiting = waitingList.some((entry) => sameCharacter(entry, character));
-                    const status = getAssignmentStatus(character);
-                    const fullyAssigned = status.rudra && status.erosion;
+                {modalError ? <p className="text-sm text-rose-500">{modalError}</p> : null}
+              </aside>
 
-                    return (
-                      <div key={`result-${character.id}`} className="rounded-lg border border-slate-700 bg-slate-800/70 p-2">
-                        <div className="flex items-start gap-2">
-                          <div className="min-w-0 flex-1">
-                            <CharacterCard character={character} compact assignmentStatus={status} disabled={fullyAssigned} />
-                          </div>
-
+              <section className="min-h-0 flex flex-col">
+                <div className="mb-2 flex items-center justify-between">
+                  <h3 className="text-sm font-semibold text-neutral-200">검색 결과</h3>
+                  <p className="text-xs text-neutral-400">{modalResults.length.toLocaleString("ko-KR")}건</p>
+                </div>
+                <div className="min-h-0 flex-1 overflow-y-auto rounded-lg border border-neutral-700 scrollbar-neutral">
+                  {modalResults.length > 0 ? (
+                    <div className="grid grid-cols-1 gap-2 p-3 lg:grid-cols-2">
+                      {modalResults.map((character) => {
+                        const inWaiting = waitingList.some((entry) => sameCharacter(entry, character));
+                        const status = getAssignmentStatus(character);
+                        const fullyAssigned = status.rudra && status.erosion;
+                        const addButton = (
                           <button
                             type="button"
                             disabled={inWaiting}
                             onClick={() => addToWaitingList(character)}
-                            className={`w-17 shrink-0 rounded-md px-2.5 py-1.5 text-xs font-semibold transition ${
+                            className={`w-17 shrink-0 rounded-md px-2 py-1 text-[11px] font-semibold transition ${
                               inWaiting
-                                ? "cursor-not-allowed bg-emerald-900/40 text-emerald-200"
-                                : "bg-slate-100 text-slate-900 hover:bg-slate-200"
+                                ? "cursor-not-allowed border border-emerald-700/60 bg-emerald-900/40 text-emerald-200"
+                                : "bg-neutral-100 text-neutral-900 hover:bg-neutral-200"
                             }`}
                           >
                             {inWaiting ? "대기중" : "대기 추가"}
                           </button>
-                        </div>
-                      </div>
-                    );
-                  })}
+                        );
+
+                        return (
+                          <div key={`result-${character.id}`} className="rounded-lg border border-neutral-700 bg-neutral-800/70 p-2">
+                            <CharacterCard
+                              character={character}
+                              compact
+                              slotLayout
+                              dense
+                              serverEmphasis
+                              assignmentStatus={status}
+                              disabled={fullyAssigned}
+                            />
+                            <div className="mt-2 flex justify-end">{addButton}</div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  ) : (
+                    <div className="px-4 py-10 text-center text-sm text-neutral-400">검색 결과가 없습니다.</div>
+                  )}
                 </div>
-              ) : (
-                <div className="px-4 py-10 text-center text-sm text-slate-400">검색 결과가 없습니다.</div>
-              )}
+              </section>
             </div>
           </div>
         </div>
@@ -1124,13 +1455,55 @@ function WaitingDropZone({ children }: { children: React.ReactNode }) {
       type: "waiting-drop",
     } satisfies DropPayload,
   });
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+  const [showTopFade, setShowTopFade] = useState(false);
+  const [showBottomFade, setShowBottomFade] = useState(false);
+
+  const updateBottomFade = () => {
+    const element = scrollRef.current;
+    if (!element) {
+      setShowBottomFade(false);
+      return;
+    }
+
+    const hasOverflow = element.scrollHeight > element.clientHeight + 1;
+    const hasMoreAbove = element.scrollTop > 1;
+    const hasMoreBelow = element.scrollTop + element.clientHeight < element.scrollHeight - 1;
+    setShowTopFade(hasOverflow && hasMoreAbove);
+    setShowBottomFade(hasOverflow && hasMoreBelow);
+  };
+
+  useEffect(() => {
+    const frame = requestAnimationFrame(updateBottomFade);
+    const onResize = () => updateBottomFade();
+    window.addEventListener("resize", onResize);
+
+    return () => {
+      cancelAnimationFrame(frame);
+      window.removeEventListener("resize", onResize);
+    };
+  }, [children]);
 
   return (
     <div
-      ref={setNodeRef}
-      className={`rounded-xl p-2 transition ${isOver ? "bg-slate-800 ring-1 ring-slate-600" : "bg-transparent"}`}
+      ref={(node) => {
+        scrollRef.current = node;
+        setNodeRef(node);
+      }}
+      onScroll={updateBottomFade}
+      className={`relative min-h-0 flex-1 overflow-y-auto rounded-xl transition scrollbar-neutral ${isOver ? "bg-neutral-800 ring-1 ring-neutral-600" : "bg-transparent"}`}
     >
       {children}
+      <div
+        className={`pointer-events-none absolute inset-x-0 top-0 h-10 bg-gradient-to-b from-neutral-950/95 to-transparent transition-opacity duration-200 ${
+          showTopFade ? "opacity-100" : "opacity-0"
+        }`}
+      />
+      <div
+        className={`pointer-events-none absolute inset-x-0 bottom-0 h-10 bg-gradient-to-t from-neutral-950/95 to-transparent transition-opacity duration-200 ${
+          showBottomFade ? "opacity-100" : "opacity-0"
+        }`}
+      />
     </div>
   );
 }

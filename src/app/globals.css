@@ -15,3 +15,29 @@ body {
   color: var(--foreground);
   font-family: "Pretendard", "SUIT", "Inter", "Noto Sans KR", "Apple SD Gothic Neo", sans-serif;
 }
+
+.scrollbar-neutral {
+  scrollbar-width: thin;
+  scrollbar-color: #525252 #171717;
+  scrollbar-gutter: stable;
+}
+
+.scrollbar-neutral::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+.scrollbar-neutral::-webkit-scrollbar-track {
+  background: #171717;
+  border-radius: 9999px;
+}
+
+.scrollbar-neutral::-webkit-scrollbar-thumb {
+  background: #525252;
+  border-radius: 9999px;
+  border: 2px solid #171717;
+}
+
+.scrollbar-neutral::-webkit-scrollbar-thumb:hover {
+  background: #737373;
+}
