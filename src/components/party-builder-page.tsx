@@ -456,6 +456,7 @@ export default function PartyBuilderPage({
   const [modalSource, setModalSource] = useState("");
   const [modalLoading, setModalLoading] = useState(false);
   const [modalError, setModalError] = useState("");
+  const [waitingQuery, setWaitingQuery] = useState("");
 
   const [shareLoading, setShareLoading] = useState(false);
   const [shareLink, setShareLink] = useState("");
@@ -879,6 +880,22 @@ export default function PartyBuilderPage({
     return [...pending, ...completed];
   }, [waitingList, assignmentMap]);
 
+  const filteredWaitingList = useMemo(() => {
+    const keyword = waitingQuery.trim().toLowerCase();
+    if (!keyword) {
+      return orderedWaitingList;
+    }
+
+    return orderedWaitingList.filter((character) => {
+      const className = character.className ?? "";
+      return (
+        character.name.toLowerCase().includes(keyword) ||
+        character.serverName.toLowerCase().includes(keyword) ||
+        className.toLowerCase().includes(keyword)
+      );
+    });
+  }, [orderedWaitingList, waitingQuery]);
+
   const removeCharacterFromKindSlots = (
     mutableParties: Party[],
     target: CharacterSummary,
@@ -1179,11 +1196,20 @@ export default function PartyBuilderPage({
               <h2 className="text-base font-medium text-neutral-100">대기 목록</h2>
               <p className="text-xs text-neutral-400">칩은 구분별 배치 상태를 표시하며, 둘 다 배치되면 카드가 비활성화됩니다.</p>
             </div>
+            <div className="mb-2">
+              <input
+                value={waitingQuery}
+                onChange={(event) => setWaitingQuery(event.target.value)}
+                placeholder="대기목록 검색 (이름/서버/직업)"
+                className={`${INPUT_CLASS} w-full`}
+              />
+            </div>
 
             <WaitingDropZone>
               {waitingList.length > 0 ? (
-                <div className="grid grid-cols-2 gap-2 md:grid-cols-1">
-                  {orderedWaitingList.map((character) => (
+                filteredWaitingList.length > 0 ? (
+                <div className="min-w-0 grid grid-cols-2 gap-2 md:grid-cols-1">
+                  {filteredWaitingList.map((character) => (
                     <div key={character.id}>
                       {(() => {
                         const status = getAssignmentStatus(character);
@@ -1241,6 +1267,11 @@ export default function PartyBuilderPage({
                     </div>
                   ))}
                 </div>
+                ) : (
+                  <div className="rounded-xl border border-dashed border-neutral-600 bg-neutral-800 px-4 py-8 text-center text-sm text-neutral-400">
+                    대기목록 검색 결과가 없습니다.
+                  </div>
+                )
               ) : (
                 <div className="rounded-xl border border-dashed border-neutral-600 bg-neutral-800 px-4 py-8 text-center text-sm text-neutral-400">
                   모달에서 캐릭터를 검색 후 대기 목록에 추가하세요.
@@ -1530,14 +1561,16 @@ function WaitingDropZone({ children }: { children: React.ReactNode }) {
 
   return (
     <div
-      ref={(node) => {
-        scrollRef.current = node;
-        setNodeRef(node);
-      }}
-      onScroll={updateBottomFade}
-      className={`relative min-h-0 flex-1 overflow-y-auto rounded-xl transition scrollbar-neutral ${isOver ? "bg-neutral-800 ring-1 ring-neutral-600" : "bg-transparent"}`}
+      ref={setNodeRef}
+      className={`relative min-h-0 flex-1 overflow-hidden rounded-xl transition ${isOver ? "bg-neutral-800 ring-1 ring-neutral-600" : "bg-transparent"}`}
     >
-      {children}
+      <div
+        ref={scrollRef}
+        onScroll={updateBottomFade}
+        className="h-full overflow-y-auto overflow-x-hidden scrollbar-neutral"
+      >
+        {children}
+      </div>
       <div
         className={`pointer-events-none absolute inset-x-0 top-0 h-10 bg-gradient-to-b from-neutral-950/95 to-transparent transition-opacity duration-200 ${
           showTopFade ? "opacity-100" : "opacity-0"
