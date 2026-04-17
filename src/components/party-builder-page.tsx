@@ -679,17 +679,27 @@ export default function PartyBuilderPage({
         }),
       });
 
-      const payload = (await response.json()) as { id?: string; url?: string; error?: string };
-      if (!response.ok || !payload.id) {
+      const payload = (await response.json()) as {
+        id?: string;
+        url?: string;
+        mode?: "stored" | "snapshot";
+        warning?: string;
+        error?: string;
+      };
+      if (!response.ok || (!payload.url && !payload.id)) {
         throw new Error(payload.error ?? "공유 링크 생성에 실패했습니다.");
       }
 
       const link = payload.url ?? `${window.location.origin}/s/${payload.id}`;
       setShareLink(link);
-      setShareNotice("");
+      setShareNotice(payload.mode === "snapshot" ? payload.warning ?? "URL 스냅샷 링크로 생성되었습니다." : "");
       const copied = await tryCopy(link);
       if (!copied) {
-        setShareNotice("공유 링크는 생성되었습니다. 자동 복사에 실패해 직접 복사해 주세요.");
+        setShareNotice((previous) =>
+          previous
+            ? `${previous} 자동 복사에 실패해 직접 복사해 주세요.`
+            : "공유 링크는 생성되었습니다. 자동 복사에 실패해 직접 복사해 주세요.",
+        );
       }
     } catch (shareCreateError) {
       try {
