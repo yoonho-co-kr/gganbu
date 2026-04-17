@@ -58,7 +58,7 @@ const STORAGE_KEY = "aion2-party-builder:v2";
 const SLOT_MEMO_MAX_LENGTH = 80;
 const PANEL_CLASS = "";
 const INPUT_CLASS =
-  "h-8 rounded-md border border-neutral-700 bg-neutral-950 px-3 text-sm text-neutral-100 placeholder:text-neutral-500 outline-none transition focus:border-neutral-500 focus:ring-2 focus:ring-neutral-800";
+  "h-8 rounded-md border border-neutral-700 bg-neutral-950 px-3 text-sm text-neutral-100 placeholder:text-neutral-500 outline-none transition focus:border-neutral-500 focus:ring-2 focus:ring-neutral-800 select-text";
 const BUTTON_PRIMARY_CLASS =
   "h-8 rounded-md bg-neutral-100 px-4 text-sm font-medium text-neutral-900 transition hover:bg-neutral-200";
 const BUTTON_SECONDARY_CLASS =
@@ -429,7 +429,7 @@ function PartySlot({
             onChange={(event) => onMemoChange?.(partyId, slotIndex, event.target.value)}
             maxLength={SLOT_MEMO_MAX_LENGTH}
             placeholder="검색이 어려우면 메모"
-            className="h-full w-full resize-none rounded-md border border-transparent bg-transparent px-1.5 py-1 text-[11px] text-neutral-300 outline-none placeholder:text-neutral-500 focus:border-neutral-600 focus:bg-neutral-900/30"
+            className="h-full w-full resize-none rounded-md border border-transparent bg-transparent px-1.5 py-1 text-[11px] text-neutral-300 outline-none placeholder:text-neutral-500 focus:border-neutral-600 focus:bg-neutral-900/30 select-text"
           />
         </div>
       )}
@@ -1098,7 +1098,7 @@ export default function PartyBuilderPage({
   };
 
   return (
-    <div className="md:h-screen overflow-hidden bg-neutral-950 tabular-nums">
+    <div className="md:h-screen overflow-hidden bg-neutral-950 tabular-nums select-none">
       <main className="mx-auto h-full w-full max-w-[1440px] overflow-hidden p-4 md:p-6">
         <DndContext
           sensors={sensors}
