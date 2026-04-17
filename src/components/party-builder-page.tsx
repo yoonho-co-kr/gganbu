@@ -5,7 +5,8 @@ import {
   DragEndEvent,
   DragOverlay,
   DragStartEvent,
-  PointerSensor,
+  MouseSensor,
+  TouchSensor,
   useDraggable,
   useDroppable,
   useSensor,
@@ -339,7 +340,13 @@ function DraggableCard({
   };
 
   return (
-    <div ref={setNodeRef} style={style} {...listeners} {...attributes} className="cursor-grab active:cursor-grabbing">
+    <div
+      ref={setNodeRef}
+      style={style}
+      {...listeners}
+      {...attributes}
+      className="select-none touch-manipulation cursor-grab active:cursor-grabbing"
+    >
       {children}
     </div>
   );
@@ -469,7 +476,10 @@ export default function PartyBuilderPage({
 
   const [activeDrag, setActiveDrag] = useState<DragPayload | null>(null);
 
-  const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 4 } }));
+  const sensors = useSensors(
+    useSensor(MouseSensor, { activationConstraint: { distance: 4 } }),
+    useSensor(TouchSensor, { activationConstraint: { delay: 180, tolerance: 8 } }),
+  );
 
   const assignedCount = useMemo(
     () => parties.reduce((total, party) => total + party.slots.filter(Boolean).length, 0),
