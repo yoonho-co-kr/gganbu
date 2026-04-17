@@ -14,6 +14,7 @@ import {
 import { CSS } from "@dnd-kit/utilities";
 import { useEffect, useMemo, useRef, useState } from "react";
 
+import { encodeSnapshotToToken } from "@/lib/share-link";
 import { parseShareSnapshot } from "@/lib/share-snapshot";
 import type { CharacterSummary, ServerInfo } from "@/types/character";
 import type { ShareSnapshot } from "@/types/share";
@@ -459,6 +460,7 @@ export default function PartyBuilderPage({
   const [shareLoading, setShareLoading] = useState(false);
   const [shareLink, setShareLink] = useState("");
   const [shareError, setShareError] = useState("");
+  const [shareNotice, setShareNotice] = useState("");
   const [shareCopied, setShareCopied] = useState(false);
   const [specRefreshLoading, setSpecRefreshLoading] = useState(false);
   const [specRefreshMessage, setSpecRefreshMessage] = useState("");
@@ -647,6 +649,7 @@ export default function PartyBuilderPage({
   const createShareLink = async () => {
     setShareLoading(true);
     setShareError("");
+    setShareNotice("");
     setShareCopied(false);
 
     try {
@@ -670,13 +673,31 @@ export default function PartyBuilderPage({
 
       const link = payload.url ?? `${window.location.origin}/s/${payload.id}`;
       setShareLink(link);
+      setShareNotice("");
 
       if (navigator.clipboard?.writeText) {
         await navigator.clipboard.writeText(link);
         setShareCopied(true);
       }
     } catch (shareCreateError) {
-      setShareError(shareCreateError instanceof Error ? shareCreateError.message : "공유 링크 생성에 실패했습니다.");
+      try {
+        const token = encodeSnapshotToToken({
+          parties,
+          waitingList,
+        });
+        const fallbackLink = `${window.location.origin}/?snapshot=${encodeURIComponent(token)}`;
+        setShareLink(fallbackLink);
+
+        if (navigator.clipboard?.writeText) {
+          await navigator.clipboard.writeText(fallbackLink);
+          setShareCopied(true);
+        }
+
+        setShareError("");
+        setShareNotice("서버 공유 저장 실패로 URL 스냅샷 링크로 생성했습니다.");
+      } catch {
+        setShareError(shareCreateError instanceof Error ? shareCreateError.message : "공유 링크 생성에 실패했습니다.");
+      }
     } finally {
       setShareLoading(false);
     }
@@ -1127,6 +1148,7 @@ export default function PartyBuilderPage({
             </div>
           ) : null}
           {shareError ? <p className="mt-2 text-sm text-rose-400">{shareError}</p> : null}
+          {shareNotice ? <p className="mt-2 text-xs text-amber-300">{shareNotice}</p> : null}
           {specRefreshMessage ? <p className="mt-2 text-xs text-emerald-300">{specRefreshMessage}</p> : null}
           {specRefreshError ? <p className="mt-2 text-xs text-rose-400">{specRefreshError}</p> : null}
         </section>
