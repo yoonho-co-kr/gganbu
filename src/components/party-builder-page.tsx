@@ -652,6 +652,19 @@ export default function PartyBuilderPage({
     setShareNotice("");
     setShareCopied(false);
 
+    const tryCopy = async (link: string) => {
+      if (!navigator.clipboard?.writeText) {
+        return false;
+      }
+      try {
+        await navigator.clipboard.writeText(link);
+        setShareCopied(true);
+        return true;
+      } catch {
+        return false;
+      }
+    };
+
     try {
       const response = await fetch("/api/share", {
         method: "POST",
@@ -674,10 +687,9 @@ export default function PartyBuilderPage({
       const link = payload.url ?? `${window.location.origin}/s/${payload.id}`;
       setShareLink(link);
       setShareNotice("");
-
-      if (navigator.clipboard?.writeText) {
-        await navigator.clipboard.writeText(link);
-        setShareCopied(true);
+      const copied = await tryCopy(link);
+      if (!copied) {
+        setShareNotice("공유 링크는 생성되었습니다. 자동 복사에 실패해 직접 복사해 주세요.");
       }
     } catch (shareCreateError) {
       try {
@@ -687,14 +699,14 @@ export default function PartyBuilderPage({
         });
         const fallbackLink = `${window.location.origin}/?snapshot=${encodeURIComponent(token)}`;
         setShareLink(fallbackLink);
-
-        if (navigator.clipboard?.writeText) {
-          await navigator.clipboard.writeText(fallbackLink);
-          setShareCopied(true);
-        }
+        const copied = await tryCopy(fallbackLink);
 
         setShareError("");
-        setShareNotice("서버 공유 저장 실패로 URL 스냅샷 링크로 생성했습니다.");
+        setShareNotice(
+          copied
+            ? "서버 공유 저장 실패로 URL 스냅샷 링크로 생성했습니다."
+            : "서버 공유 저장 실패로 URL 스냅샷 링크를 생성했습니다. 자동 복사에 실패해 직접 복사해 주세요.",
+        );
       } catch {
         setShareError(shareCreateError instanceof Error ? shareCreateError.message : "공유 링크 생성에 실패했습니다.");
       }
