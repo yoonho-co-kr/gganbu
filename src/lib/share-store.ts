@@ -7,8 +7,41 @@ import type { ShareSnapshot, StoredShare } from "@/types/share";
 
 const SHARE_DIR = path.join(process.cwd(), ".data", "shares");
 const SHARE_TTL_DAYS = 30;
+const SHARE_TTL_SECONDS = SHARE_TTL_DAYS * 24 * 60 * 60;
 const MAX_ID_RETRY = 5;
 const SHARE_ID_REGEX = /^[a-zA-Z0-9_-]{6,40}$/;
+const SHARE_KEY_PREFIX = "share:";
+
+const KV_REST_API_URL = process.env.KV_REST_API_URL?.trim() ?? "";
+const KV_REST_API_TOKEN = process.env.KV_REST_API_TOKEN?.trim() ?? "";
+const hasUpstashKv = KV_REST_API_URL.length > 0 && KV_REST_API_TOKEN.length > 0;
+
+function shareKey(shareId: string) {
+  return `${SHARE_KEY_PREFIX}${shareId}`;
+}
+
+async function upstashCommand<T = unknown>(command: Array<string | number>): Promise<T | null> {
+  if (!hasUpstashKv) {
+    return null;
+  }
+
+  const response = await fetch(KV_REST_API_URL, {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${KV_REST_API_TOKEN}`,
+      "content-type": "application/json",
+    },
+    body: JSON.stringify(command),
+    cache: "no-store",
+  });
+
+  const payload = (await response.json()) as { result?: T; error?: string };
+  if (!response.ok || payload.error) {
+    throw new Error(payload.error ?? `upstash error: ${response.status}`);
+  }
+
+  return (payload.result ?? null) as T | null;
+}
 
 async function ensureShareDir() {
   await fs.mkdir(SHARE_DIR, { recursive: true });
@@ -56,21 +89,49 @@ async function cleanupExpiredShares() {
   }
 }
 
-async function generateShareId() {
-  await ensureShareDir();
+async function isShareIdTaken(shareId: string) {
+  if (hasUpstashKv) {
+    const exists = await upstashCommand<number>(["EXISTS", shareKey(shareId)]);
+    return Number(exists ?? 0) > 0;
+  }
 
+  await ensureShareDir();
+  try {
+    await fs.access(sharePath(shareId));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function generateShareId() {
   for (let retry = 0; retry < MAX_ID_RETRY; retry += 1) {
     const candidate = randomBytes(8).toString("base64url");
-    const filePath = sharePath(candidate);
-
-    try {
-      await fs.access(filePath);
-    } catch {
+    const exists = await isShareIdTaken(candidate);
+    if (!exists) {
       return candidate;
     }
   }
 
   throw new Error("공유 ID 생성에 실패했습니다.");
+}
+
+function parseStoredShare(raw: string, expectedId: string): StoredShare | null {
+  const parsed = JSON.parse(raw) as Partial<StoredShare>;
+  if (!parsed || parsed.id !== expectedId || typeof parsed.createdAt !== "string") {
+    return null;
+  }
+
+  const snapshot = parseShareSnapshot(parsed.snapshot);
+  if (!snapshot) {
+    return null;
+  }
+
+  return {
+    id: expectedId,
+    createdAt: parsed.createdAt,
+    snapshot,
+  };
 }
 
 export async function createShare(snapshot: ShareSnapshot): Promise<StoredShare> {
@@ -85,8 +146,14 @@ export async function createShare(snapshot: ShareSnapshot): Promise<StoredShare>
     createdAt: new Date().toISOString(),
     snapshot: normalized,
   };
+  const serialized = JSON.stringify(stored);
 
-  await fs.writeFile(sharePath(id), JSON.stringify(stored), "utf8");
+  if (hasUpstashKv) {
+    await upstashCommand(["SETEX", shareKey(id), SHARE_TTL_SECONDS, serialized]);
+    return stored;
+  }
+
+  await fs.writeFile(sharePath(id), serialized, "utf8");
 
   if (Math.random() < 0.2) {
     void cleanupExpiredShares();
@@ -100,28 +167,43 @@ export async function getShare(shareId: string): Promise<StoredShare | null> {
     return null;
   }
 
+  if (hasUpstashKv) {
+    try {
+      const raw = await upstashCommand<string>(["GET", shareKey(shareId)]);
+      if (!raw) {
+        return null;
+      }
+
+      const stored = parseStoredShare(raw, shareId);
+      if (!stored) {
+        return null;
+      }
+
+      // Safety net in case TTL policy changes.
+      if (isExpired(stored.createdAt)) {
+        await upstashCommand(["DEL", shareKey(shareId)]).catch(() => null);
+        return null;
+      }
+
+      return stored;
+    } catch {
+      return null;
+    }
+  }
+
   try {
     const raw = await fs.readFile(sharePath(shareId), "utf8");
-    const parsed = JSON.parse(raw) as Partial<StoredShare>;
-    if (!parsed || parsed.id !== shareId || typeof parsed.createdAt !== "string") {
+    const stored = parseStoredShare(raw, shareId);
+    if (!stored) {
       return null;
     }
 
-    if (isExpired(parsed.createdAt)) {
+    if (isExpired(stored.createdAt)) {
       await fs.unlink(sharePath(shareId)).catch(() => undefined);
       return null;
     }
 
-    const snapshot = parseShareSnapshot(parsed.snapshot);
-    if (!snapshot) {
-      return null;
-    }
-
-    return {
-      id: shareId,
-      createdAt: parsed.createdAt,
-      snapshot,
-    };
+    return stored;
   } catch {
     return null;
   }

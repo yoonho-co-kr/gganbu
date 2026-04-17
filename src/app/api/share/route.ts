@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 
-import { encodeSnapshotToToken } from "@/lib/share-link";
+import { encodeCompressedSnapshotToken } from "@/lib/share-link-server";
 import { parseShareSnapshot } from "@/lib/share-snapshot";
 import { createShare } from "@/lib/share-store";
 
@@ -26,13 +26,13 @@ export async function POST(request: Request) {
         mode: "stored",
       });
     } catch {
-      const token = encodeSnapshotToToken(snapshot);
+      const token = encodeCompressedSnapshotToken(snapshot);
       return NextResponse.json({
         id: `snapshot-${Date.now().toString(36)}`,
         createdAt: new Date().toISOString(),
         url: `${origin}/?snapshot=${encodeURIComponent(token)}`,
         mode: "snapshot",
-        warning: "서버 저장이 불가하여 URL 스냅샷 링크로 대체되었습니다.",
+        warning: "서버 저장이 불가하여 압축 URL 스냅샷 링크로 대체되었습니다.",
       });
     }
   } catch {

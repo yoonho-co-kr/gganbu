@@ -1,5 +1,5 @@
 import PartyBuilderPage from "@/components/party-builder-page";
-import { decodeSnapshotFromToken } from "@/lib/share-link";
+import { decodeSnapshotToken } from "@/lib/share-link-server";
 
 export default async function Home({
   searchParams,
@@ -8,7 +8,7 @@ export default async function Home({
 }) {
   const resolved = await searchParams;
   const snapshotParam = Array.isArray(resolved.snapshot) ? resolved.snapshot[0] : resolved.snapshot;
-  const initialSnapshot = snapshotParam ? decodeSnapshotFromToken(snapshotParam) : null;
+  const initialSnapshot = snapshotParam ? decodeSnapshotToken(snapshotParam) : null;
 
   return <PartyBuilderPage initialSnapshot={initialSnapshot ?? undefined} />;
 }
