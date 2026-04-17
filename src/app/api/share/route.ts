@@ -28,6 +28,7 @@ export async function POST(request: Request) {
     } catch {
       const token = encodeSnapshotToToken(snapshot);
       return NextResponse.json({
+        id: `snapshot-${Date.now().toString(36)}`,
         createdAt: new Date().toISOString(),
         url: `${origin}/?snapshot=${encodeURIComponent(token)}`,
         mode: "snapshot",
