@@ -1071,7 +1071,7 @@ export default function PartyBuilderPage({
   };
 
   return (
-    <div className="h-screen overflow-hidden bg-neutral-950 tabular-nums">
+    <div className="md:h-screen overflow-hidden bg-neutral-950 tabular-nums">
       <main className="mx-auto h-full w-full max-w-[1440px] overflow-hidden p-4 md:p-6">
         <DndContext
           sensors={sensors}
@@ -1182,7 +1182,7 @@ export default function PartyBuilderPage({
 
             <WaitingDropZone>
               {waitingList.length > 0 ? (
-                <div className="grid grid-cols-1 gap-2">
+                <div className="grid grid-cols-2 gap-2 md:grid-cols-1">
                   {orderedWaitingList.map((character) => (
                     <div key={character.id}>
                       {(() => {
@@ -1323,7 +1323,7 @@ export default function PartyBuilderPage({
                           </span>
                         </p>
                       </div>
-                      <div className="mt-2 space-y-2">
+                      <div className="mt-2 grid grid-cols-2 gap-2 md:grid-cols-1">
                         {teamOneSlots.map((character, index) => (
                           <PartySlot
                             key={`${party.id}-slot-${index}`}
@@ -1351,7 +1351,7 @@ export default function PartyBuilderPage({
                           </span>
                         </p>
                       </div>
-                      <div className="mt-2 space-y-2">
+                      <div className="mt-2 grid grid-cols-2 gap-2 md:grid-cols-1">
                         {teamTwoSlots.map((character, index) => (
                           <PartySlot
                             key={`${party.id}-slot-${index + 4}`}
