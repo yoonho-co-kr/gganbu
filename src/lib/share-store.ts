@@ -14,7 +14,13 @@ const SHARE_KEY_PREFIX = "share:";
 
 const KV_REST_API_URL = process.env.KV_REST_API_URL?.trim() ?? "";
 const KV_REST_API_TOKEN = process.env.KV_REST_API_TOKEN?.trim() ?? "";
-const hasUpstashKv = KV_REST_API_URL.length > 0 && KV_REST_API_TOKEN.length > 0;
+const UPSTASH_REDIS_REST_URL = process.env.UPSTASH_REDIS_REST_URL?.trim() ?? "";
+const UPSTASH_REDIS_REST_TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN?.trim() ?? "";
+
+const REST_API_URL = KV_REST_API_URL || UPSTASH_REDIS_REST_URL;
+const REST_API_TOKEN = KV_REST_API_TOKEN || UPSTASH_REDIS_REST_TOKEN;
+const hasUpstashKv = REST_API_URL.length > 0 && REST_API_TOKEN.length > 0;
+const isVercelRuntime = Boolean(process.env.VERCEL);
 
 function shareKey(shareId: string) {
   return `${SHARE_KEY_PREFIX}${shareId}`;
@@ -25,10 +31,10 @@ async function upstashCommand<T = unknown>(command: Array<string | number>): Pro
     return null;
   }
 
-  const response = await fetch(KV_REST_API_URL, {
+  const response = await fetch(REST_API_URL, {
     method: "POST",
     headers: {
-      authorization: `Bearer ${KV_REST_API_TOKEN}`,
+      authorization: `Bearer ${REST_API_TOKEN}`,
       "content-type": "application/json",
     },
     body: JSON.stringify(command),
@@ -140,6 +146,12 @@ export async function createShare(snapshot: ShareSnapshot): Promise<StoredShare>
     throw new Error("유효하지 않은 스냅샷입니다.");
   }
 
+  if (!hasUpstashKv && isVercelRuntime) {
+    throw new Error(
+      "공유 저장소 환경변수가 없습니다. KV_REST_API_URL/KV_REST_API_TOKEN 또는 UPSTASH_REDIS_REST_URL/UPSTASH_REDIS_REST_TOKEN을 설정하세요.",
+    );
+  }
+
   const id = await generateShareId();
   const stored: StoredShare = {
     id,
@@ -164,6 +176,10 @@ export async function createShare(snapshot: ShareSnapshot): Promise<StoredShare>
 
 export async function getShare(shareId: string): Promise<StoredShare | null> {
   if (!SHARE_ID_REGEX.test(shareId)) {
+    return null;
+  }
+
+  if (!hasUpstashKv && isVercelRuntime) {
     return null;
   }
 

@@ -25,14 +25,18 @@ export async function POST(request: Request) {
         url: `${origin}/s/${stored.id}`,
         mode: "stored",
       });
-    } catch {
+    } catch (error) {
+      const reason =
+        error instanceof Error && error.message
+          ? ` ${error.message}`
+          : "";
       const token = encodeCompressedSnapshotToken(snapshot);
       return NextResponse.json({
         id: `snapshot-${Date.now().toString(36)}`,
         createdAt: new Date().toISOString(),
         url: `${origin}/?snapshot=${encodeURIComponent(token)}`,
         mode: "snapshot",
-        warning: "서버 저장이 불가하여 압축 URL 스냅샷 링크로 대체되었습니다.",
+        warning: `서버 저장이 불가하여 압축 URL 스냅샷 링크로 대체되었습니다.${reason}`,
       });
     }
   } catch {
