@@ -57,6 +57,38 @@ type CharacterDetailData = {
     itemLevel: number;
     combatPower: number;
   };
+  skills: {
+    activeSkills: Array<{
+      id: number;
+      name: string;
+      needLevel: number;
+      category: string;
+      skillLevel: number;
+      acquired: number;
+      equip: number;
+      icon: string | null;
+    }>;
+    passiveSkills: Array<{
+      id: number;
+      name: string;
+      needLevel: number;
+      category: string;
+      skillLevel: number;
+      acquired: number;
+      equip: number;
+      icon: string | null;
+    }>;
+    stigmaSkills: Array<{
+      id: number;
+      name: string;
+      needLevel: number;
+      category: string;
+      skillLevel: number;
+      acquired: number;
+      equip: number;
+      icon: string | null;
+    }>;
+  };
   statList: Array<{
     type: string;
     name: string;
@@ -727,6 +759,7 @@ export default function PartyBuilderPage({
   const [detailData, setDetailData] = useState<CharacterDetailData | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailError, setDetailError] = useState("");
+  const [skinEquipmentCollapsed, setSkinEquipmentCollapsed] = useState(true);
   const [selectedEquipmentItem, setSelectedEquipmentItem] = useState<CharacterDetailEquipmentItem | null>(null);
   const [equipmentItemDetail, setEquipmentItemDetail] = useState<EquipmentItemDetailData | null>(null);
   const [equipmentItemLoading, setEquipmentItemLoading] = useState(false);
@@ -928,6 +961,7 @@ export default function PartyBuilderPage({
     setDetailTarget(character);
     setDetailData(null);
     setDetailError("");
+    setSkinEquipmentCollapsed(true);
     setSelectedEquipmentItem(null);
     setEquipmentItemDetail(null);
     setEquipmentItemError("");
@@ -2020,46 +2054,126 @@ export default function PartyBuilderPage({
                     <p className="text-xs text-neutral-400">장비 정보가 없습니다.</p>
                   )}
 
-                  {detailData.equipment.skinList.length > 0 ? (
-                    <>
-                      <h3 className="mb-2 mt-4 text-sm font-semibold text-neutral-100">스킨 장비</h3>
-                      <div className="space-y-3">
-                        {groupEquipmentItems(detailData.equipment.skinList).map((group) => (
-                          <div key={`skin-group-${group.category}`}>
-                            <div className="mb-1 flex items-center justify-between gap-2">
-                              <p className="text-[11px] font-semibold text-neutral-300">{group.label}</p>
-                              <p className="text-[10px] text-neutral-400">
-                                {group.category === "rune" ? formatRuneSummary(group.items) : formatBreakthroughSummary(group.items)}
+                  <div className="mt-4 rounded-md border border-neutral-700 bg-neutral-900/60 p-2.5">
+                    <div className="grid grid-cols-1 gap-3 text-xs text-neutral-300 sm:grid-cols-3">
+                      <div>
+                        <p className="text-[11px] font-semibold text-neutral-200">액티브 스킬</p>
+                        <div className="mt-1 max-h-28 space-y-1 overflow-y-auto pr-1 scrollbar-neutral">
+                          {detailData.skills.activeSkills.length > 0 ? (
+                            detailData.skills.activeSkills.map((skill, index) => (
+                              <p
+                                key={`active-skill-${skill.id}-${skill.name}-${index}`}
+                                className="flex items-center gap-1.5 truncate"
+                              >
+                                <span className="h-4 w-4 shrink-0 overflow-hidden rounded border border-neutral-700 bg-neutral-800">
+                                  {skill.icon ? <img src={skill.icon} alt="" className="h-full w-full object-cover" /> : null}
+                                </span>
+                                <span className="truncate">{skill.name}</span>
+                                <span className={`ml-auto shrink-0 ${NUM_EMPHASIS_CLASS}`}>+{skill.skillLevel}</span>
                               </p>
-                            </div>
-                            <div className="grid grid-cols-1 gap-2 md:grid-cols-2 xl:grid-cols-3">
-                              {group.items.map((item) => {
-                                const tone = getEquipmentGradeTone(item.grade);
-                                return (
-                                  <div
-                                    key={`skin-${item.slotPosName}-${item.id}-${item.slotPos}`}
-                                    className={`flex cursor-pointer items-center gap-2 rounded-md border p-2 transition hover:bg-neutral-800/60 ${tone.row}`}
-                                    onClick={() => void openEquipmentItemDetail(item)}
-                                  >
-                                    <div className="h-9 w-9 overflow-hidden rounded border border-neutral-700 bg-neutral-800">
-                                      {item.icon ? <img src={item.icon} alt="" className="h-full w-full object-cover" /> : null}
-                                    </div>
-                                    <div className="min-w-0 flex-1">
-                                      <p className={`truncate text-xs font-semibold ${tone.name}`}>
-                                        {item.name}
-                                        {item.enchantLevel > 0 ? (
-                                          <span className="ml-1 text-[11px] text-neutral-300">+{item.enchantLevel}</span>
-                                        ) : null}
-                                      </p>
-                                    </div>
-                                  </div>
-                                );
-                              })}
-                            </div>
-                          </div>
-                        ))}
+                            ))
+                          ) : (
+                            <p className="text-neutral-500">표시할 액티브 스킬이 없습니다.</p>
+                          )}
+                        </div>
                       </div>
-                    </>
+                      <div>
+                        <p className="text-[11px] font-semibold text-neutral-200">패시브 스킬</p>
+                        <div className="mt-1 max-h-28 space-y-1 overflow-y-auto pr-1 scrollbar-neutral">
+                          {detailData.skills.passiveSkills.length > 0 ? (
+                            detailData.skills.passiveSkills.map((skill, index) => (
+                              <p
+                                key={`passive-skill-${skill.id}-${skill.name}-${index}`}
+                                className="flex items-center gap-1.5 truncate"
+                              >
+                                <span className="h-4 w-4 shrink-0 overflow-hidden rounded border border-neutral-700 bg-neutral-800">
+                                  {skill.icon ? <img src={skill.icon} alt="" className="h-full w-full object-cover" /> : null}
+                                </span>
+                                <span className="truncate">{skill.name}</span>
+                                <span className={`ml-auto shrink-0 ${NUM_EMPHASIS_CLASS}`}>+{skill.skillLevel}</span>
+                              </p>
+                            ))
+                          ) : (
+                            <p className="text-neutral-500">표시할 패시브 스킬이 없습니다.</p>
+                          )}
+                        </div>
+                      </div>
+                      <div>
+                        <p className="text-[11px] font-semibold text-neutral-200">스티그마</p>
+                        <div className="mt-1 max-h-28 space-y-1 overflow-y-auto pr-1 scrollbar-neutral">
+                          {detailData.skills.stigmaSkills.length > 0 ? (
+                            detailData.skills.stigmaSkills.map((skill, index) => (
+                              <p
+                                key={`stigma-skill-${skill.id}-${skill.name}-${index}`}
+                                className="flex items-center gap-1.5 truncate"
+                              >
+                                <span className="h-4 w-4 shrink-0 overflow-hidden rounded border border-neutral-700 bg-neutral-800">
+                                  {skill.icon ? <img src={skill.icon} alt="" className="h-full w-full object-cover" /> : null}
+                                </span>
+                                <span className="truncate">{skill.name}</span>
+                                <span className={`ml-auto shrink-0 ${NUM_EMPHASIS_CLASS}`}>+{skill.skillLevel}</span>
+                              </p>
+                            ))
+                          ) : (
+                            <p className="text-neutral-500">표시할 스티그마가 없습니다.</p>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  {detailData.equipment.skinList.length > 0 ? (
+                    <div className="mt-3">
+                      <button
+                        type="button"
+                        onClick={() => setSkinEquipmentCollapsed((previous) => !previous)}
+                        className="flex w-full items-center justify-between rounded-md border border-neutral-700 bg-neutral-900/60 px-3 py-2 text-left text-sm font-semibold text-neutral-100 transition hover:bg-neutral-800/80"
+                      >
+                        <span>스킨 장비</span>
+                        <span className="text-xs text-neutral-300">{skinEquipmentCollapsed ? "펼치기" : "접기"}</span>
+                      </button>
+
+                      {!skinEquipmentCollapsed ? (
+                        <div className="mt-2 space-y-3">
+                          {groupEquipmentItems(detailData.equipment.skinList).map((group) => (
+                            <div key={`skin-group-${group.category}`}>
+                              <div className="mb-1 flex items-center justify-between gap-2">
+                                <p className="text-[11px] font-semibold text-neutral-300">{group.label}</p>
+                                <p className="text-[10px] text-neutral-400">
+                                  {group.category === "rune"
+                                    ? formatRuneSummary(group.items)
+                                    : formatBreakthroughSummary(group.items)}
+                                </p>
+                              </div>
+                              <div className="grid grid-cols-1 gap-2 md:grid-cols-2 xl:grid-cols-3">
+                                {group.items.map((item) => {
+                                  const tone = getEquipmentGradeTone(item.grade);
+                                  return (
+                                    <div
+                                      key={`skin-${item.slotPosName}-${item.id}-${item.slotPos}`}
+                                      className={`flex cursor-pointer items-center gap-2 rounded-md border p-2 transition hover:bg-neutral-800/60 ${tone.row}`}
+                                      onClick={() => void openEquipmentItemDetail(item)}
+                                    >
+                                      <div className="h-9 w-9 overflow-hidden rounded border border-neutral-700 bg-neutral-800">
+                                        {item.icon ? <img src={item.icon} alt="" className="h-full w-full object-cover" /> : null}
+                                      </div>
+                                      <div className="min-w-0 flex-1">
+                                        <p className={`truncate text-xs font-semibold ${tone.name}`}>
+                                          {item.name}
+                                          {item.enchantLevel > 0 ? (
+                                            <span className="ml-1 text-[11px] text-neutral-300">+{item.enchantLevel}</span>
+                                          ) : null}
+                                        </p>
+                                      </div>
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      ) : null}
+                    </div>
                   ) : null}
                   </div>
                   </div>
