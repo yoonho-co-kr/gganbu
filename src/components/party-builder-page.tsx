@@ -1928,10 +1928,11 @@ export default function PartyBuilderPage({
                 {detailError}
               </div>
             ) : detailData ? (
-              <div className="grid max-h-[76vh] min-h-0 grid-cols-1 gap-3 lg:grid-cols-[minmax(0,1fr)_300px]">
-                <section className="min-h-0 flex flex-col rounded-lg border border-neutral-700 bg-neutral-800/40 p-3">
+              <div className="grid max-h-[80vh] min-h-0 grid-cols-1 gap-3 lg:grid-cols-[minmax(0,1fr)_300px]">
+                <section className="h-full min-h-0 flex flex-col rounded-lg border border-neutral-700 bg-neutral-800/40 p-3">
                   <h3 className="mb-2 text-sm font-semibold text-neutral-100">착용 장비</h3>
-                  <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden pr-1 scrollbar-neutral">
+                  <div className="relative h-full flex-1 overflow-y-auto pr-1 scrollbar-neutral">
+                  <div className="absolute h-full min-h-0 flex-1 overflow-y-auto overflow-x-hidden pr-1 scrollbar-neutral">
                   {detailData.equipment.equipmentList.length > 0 ? (
                     <div className="space-y-3">
                       {groupEquipmentItems(detailData.equipment.equipmentList, { includeEmptyRuneGroup: true }).map((group) => (
@@ -2061,6 +2062,7 @@ export default function PartyBuilderPage({
                     </>
                   ) : null}
                   </div>
+                  </div>
                 </section>
 
                 <aside className="min-h-0 overflow-y-auto rounded-lg border border-neutral-700 bg-neutral-800/40 p-3 scrollbar-neutral">
@@ -2108,7 +2110,7 @@ export default function PartyBuilderPage({
 
       {selectedEquipmentItem ? (
         <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/70 p-4 backdrop-blur-[1px]">
-          <div className="w-full max-w-3xl rounded-xl border border-neutral-800 bg-neutral-900 p-5 shadow-xl">
+          <div className="w-full max-w-80 rounded-xl border border-neutral-800 bg-neutral-900 p-5 shadow-xl">
             <div className="mb-4 flex items-center justify-between gap-3">
               <div className="min-w-0 flex items-center gap-3">
                 <div className="h-10 w-10 overflow-hidden rounded border border-neutral-700 bg-neutral-800">
@@ -2146,96 +2148,57 @@ export default function PartyBuilderPage({
               <div className="max-h-[72vh] overflow-y-auto rounded-lg border border-neutral-700 bg-neutral-800/40 p-3 scrollbar-neutral">
                 {(() => {
                   const item = equipmentItemDetail.item as Record<string, unknown>;
-                  const mainStats = Array.isArray(item.mainStats) ? (item.mainStats as Record<string, unknown>[]) : [];
                   const subStats = Array.isArray(item.subStats) ? (item.subStats as Record<string, unknown>[]) : [];
                   const subSkills = Array.isArray(item.subSkills) ? (item.subSkills as Record<string, unknown>[]) : [];
                   const magicStoneStats = Array.isArray(item.magicStoneStat)
                     ? (item.magicStoneStat as Record<string, unknown>[])
                     : [];
-                  const godStoneStats = Array.isArray(item.godStoneStat) ? (item.godStoneStat as Record<string, unknown>[]) : [];
-                  const sources = Array.isArray(item.sources) ? (item.sources as unknown[]).map((value) => String(value)) : [];
-                  const classNames = Array.isArray(item.classNames)
-                    ? (item.classNames as unknown[]).map((value) => String(value))
-                    : [];
                   const soulBindRate = String(item.soulBindRate ?? "").trim();
-                  const subStatRandom = Boolean(item.subStatRandom);
-                  const sourceWarnings =
-                    Array.isArray(equipmentItemDetail.warnings) && equipmentItemDetail.warnings.length > 0
-                      ? equipmentItemDetail.warnings.join(" | ")
-                      : "";
-                  const isCharacterTuned =
-                    equipmentItemDetail.source === "plaync-equipment-item" &&
-                    equipmentItemDetail.characterContextApplied !== false;
+                  const soulBindRateNumeric = Number.parseFloat(soulBindRate.replace(/[^\d.]/g, ""));
+                  const soulBindRatePercent =
+                    Number.isFinite(soulBindRateNumeric) && soulBindRateNumeric >= 0
+                      ? Math.max(0, Math.min(100, soulBindRateNumeric))
+                      : null;
 
                   return (
                     <>
-                      {!isCharacterTuned ? (
-                        <div className="mb-3 rounded-md border border-amber-700/60 bg-amber-900/30 px-3 py-2 text-xs text-amber-200">
-                          캐릭터 조율 정보(영혼각인 적용값) 조회에 실패해 기본 장비 정보로 대체되었습니다.
-                          {sourceWarnings ? <span className="block mt-1 text-[10px] text-amber-300/90">{sourceWarnings}</span> : null}
-                        </div>
-                      ) : null}
-
-                      <div className="mb-3 grid grid-cols-1 gap-2 sm:grid-cols-2">
-                        <div className="rounded-md border border-neutral-700 bg-neutral-900/70 px-3 py-2">
+                      <div className="rounded-md border border-neutral-700 bg-neutral-900/70 px-3 py-2">
+                        <div className="mb-1 flex items-center justify-between gap-2">
                           <p className="text-[10px] text-neutral-400">영혼각인 수치</p>
                           <p className="text-sm font-semibold text-teal-200">{soulBindRate || "-"}</p>
                         </div>
-                        <div className="rounded-md border border-neutral-700 bg-neutral-900/70 px-3 py-2">
-                          <p className="text-[10px] text-neutral-400">조율 가능 여부</p>
-                          <p className="text-sm font-semibold text-neutral-100">{subStatRandom ? "가능" : "고정"}</p>
+                        <div className="h-2.5 w-full overflow-hidden rounded-full border border-neutral-700 bg-neutral-800">
+                          <div
+                            className="h-full rounded-full bg-teal-400/90 transition-all"
+                            style={{ width: `${soulBindRatePercent ?? 0}%` }}
+                          />
                         </div>
                       </div>
 
-                      <div className="grid grid-cols-2 gap-2 text-xs text-neutral-300">
-                        <p>등급: {String(item.gradeName ?? item.grade ?? "-")}</p>
-                        <p>장비레벨: {String(item.equipLevel ?? "-")}</p>
-                        <p>카테고리: {String(item.categoryName ?? "-")}</p>
-                        <p>종족: {String(item.raceName ?? "-")}</p>
-                        <p>최대 강화: {String(item.maxEnchantLevel ?? "-")}</p>
-                        <p>최대 돌파: {String(item.maxExceedEnchantLevel ?? "-")}</p>
-                        {classNames.length > 0 ? <p className="col-span-2">착용 클래스: {classNames.join(", ")}</p> : null}
+                      <h4 className="mt-4 text-sm font-semibold text-neutral-100">영혼각인/조율 옵션</h4>
+                      <div className="mt-1 space-y-1 text-xs text-neutral-300">
+                        {subStats.map((stat, index) => (
+                          <p key={`sub-${index}`} className="truncate">
+                            {String(stat.name ?? "-")}: <span className={NUM_EMPHASIS_CLASS}>{String(stat.value ?? "-")}</span>
+                          </p>
+                        ))}
+                        {subSkills.map((skill, index) => {
+                          const level = skill.level ?? skill.skillLevel ?? skill.value;
+                          return (
+                            <p key={`sub-skill-${index}`} className="truncate">
+                              {String(skill.name ?? "-")}:{" "}
+                              <span className={NUM_EMPHASIS_CLASS}>
+                                {level !== undefined && level !== null && String(level).trim().length > 0
+                                  ? `+${String(level)}`
+                                  : "-"}
+                              </span>
+                            </p>
+                          );
+                        })}
+                        {subStats.length === 0 && subSkills.length === 0 ? (
+                          <p className="text-neutral-500">표시 가능한 조율 옵션이 없습니다.</p>
+                        ) : null}
                       </div>
-
-                      {mainStats.length > 0 ? (
-                        <>
-                          <h4 className="mt-4 text-sm font-semibold text-neutral-100">주 스탯</h4>
-                          <div className="mt-1 space-y-1 text-xs text-neutral-300">
-                            {mainStats.map((stat, index) => (
-                              <p key={`main-${index}`} className="truncate">
-                                {String(stat.name ?? "-")}: <span className={NUM_EMPHASIS_CLASS}>{String(stat.value ?? "-")}</span>
-                                {stat.extra ? <span className="text-neutral-400"> (추가 {String(stat.extra)})</span> : null}
-                              </p>
-                            ))}
-                          </div>
-                        </>
-                      ) : null}
-
-                      {subStats.length > 0 || subSkills.length > 0 ? (
-                        <>
-                          <h4 className="mt-4 text-sm font-semibold text-neutral-100">영혼각인/조율 옵션</h4>
-                          <div className="mt-1 space-y-1 text-xs text-neutral-300">
-                            {subStats.map((stat, index) => (
-                              <p key={`sub-${index}`} className="truncate">
-                                {String(stat.name ?? "-")}: <span className={NUM_EMPHASIS_CLASS}>{String(stat.value ?? "-")}</span>
-                              </p>
-                            ))}
-                            {subSkills.map((skill, index) => {
-                              const level = skill.level ?? skill.skillLevel ?? skill.value;
-                              return (
-                                <p key={`sub-skill-${index}`} className="truncate">
-                                  {String(skill.name ?? "-")}:{" "}
-                                  <span className={NUM_EMPHASIS_CLASS}>
-                                    {level !== undefined && level !== null && String(level).trim().length > 0
-                                      ? `+${String(level)}`
-                                      : "-"}
-                                  </span>
-                                </p>
-                              );
-                            })}
-                          </div>
-                        </>
-                      ) : null}
 
                       {magicStoneStats.length > 0 ? (
                         <>
@@ -2247,26 +2210,6 @@ export default function PartyBuilderPage({
                               </p>
                             ))}
                           </div>
-                        </>
-                      ) : null}
-
-                      {godStoneStats.length > 0 ? (
-                        <>
-                          <h4 className="mt-4 text-sm font-semibold text-neutral-100">신석</h4>
-                          <div className="mt-1 space-y-1 text-xs text-neutral-300">
-                            {godStoneStats.map((stat, index) => (
-                              <p key={`god-${index}`} className="truncate">
-                                {String(stat.name ?? "-")}
-                              </p>
-                            ))}
-                          </div>
-                        </>
-                      ) : null}
-
-                      {sources.length > 0 ? (
-                        <>
-                          <h4 className="mt-4 text-sm font-semibold text-neutral-100">획득처</h4>
-                          <p className="mt-1 text-xs text-neutral-300">{sources.join(", ")}</p>
                         </>
                       ) : null}
                     </>
