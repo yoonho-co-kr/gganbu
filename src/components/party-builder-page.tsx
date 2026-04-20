@@ -31,6 +31,54 @@ type Party = {
 
 type SlotMemoMap = Record<string, string>;
 
+type CharacterDetailEquipmentItem = {
+  id: number;
+  name: string;
+  grade: string;
+  enchantLevel: number;
+  exceedLevel: number;
+  slotPos: number;
+  slotPosName: string;
+  icon: string | null;
+};
+
+type CharacterDetailData = {
+  source: string;
+  profile: {
+    characterId: string;
+    characterName: string;
+    serverId: number;
+    serverName: string;
+    className: string;
+    raceName: string;
+    regionName: string;
+    level: number;
+    profileImage: string | null;
+    itemLevel: number;
+    combatPower: number;
+  };
+  statList: Array<{
+    type: string;
+    name: string;
+    value: number;
+  }>;
+  equipment: {
+    equipmentList: CharacterDetailEquipmentItem[];
+    skinList: CharacterDetailEquipmentItem[];
+  };
+  links: {
+    plaync: string;
+    aon2: string;
+  };
+};
+
+type EquipmentItemDetailData = {
+  source: string;
+  characterContextApplied?: boolean;
+  item: Record<string, unknown>;
+  warnings?: string[];
+};
+
 type DragPayload =
   | {
       origin: "waiting";
@@ -67,6 +115,193 @@ const BUTTON_BLUE_SECONDARY_CLASS =
   "h-8 rounded-md border border-blue-500 bg-neutral-900 px-4 text-sm font-semibold text-blue-500 transition hover:bg-blue-500/10";
 const NUM_EMPHASIS_CLASS = "font-bold text-neutral-50";
 const NUM_BLUE_EMPHASIS_CLASS = "font-bold text-sky-100";
+
+type EquipmentCategoryKey = "weapon" | "armor" | "accessory" | "rune" | "arcana" | "other";
+
+const EQUIPMENT_CATEGORY_ORDER: EquipmentCategoryKey[] = ["weapon", "armor", "accessory", "rune", "arcana", "other"];
+const EQUIPMENT_BREAKTHROUGH_MAX = 5;
+const RUNE_SLOT_NAMES = ["Rune1", "Rune2"];
+
+function getEquipmentCategory(slotPosName: string): EquipmentCategoryKey {
+  if (slotPosName.startsWith("Rune")) {
+    return "rune";
+  }
+
+  if (slotPosName.startsWith("Arcana")) {
+    return "arcana";
+  }
+
+  if (
+    [
+      "MainHand",
+      "SubHand",
+      "OneHand",
+      "TwoHand",
+      "Greatsword",
+      "Sword",
+      "Dagger",
+      "Bow",
+      "Mace",
+      "Staff",
+      "Polearm",
+      "Orb",
+      "Spellbook",
+      "Gun",
+      "Harp",
+      "Shield",
+    ].includes(slotPosName)
+  ) {
+    return "weapon";
+  }
+
+  if (["Helmet", "Shoulder", "Torso", "Pants", "Gloves", "Boots", "Cape"].includes(slotPosName)) {
+    return "armor";
+  }
+
+  if (
+    [
+      "Necklace",
+      "Earring1",
+      "Earring2",
+      "EarringL",
+      "EarringR",
+      "Ring1",
+      "Ring2",
+      "Bracelet1",
+      "Bracelet2",
+      "Belt",
+      "Amulet",
+    ].includes(slotPosName)
+  ) {
+    return "accessory";
+  }
+
+  return "other";
+}
+
+function getEquipmentCategoryLabel(category: EquipmentCategoryKey) {
+  if (category === "weapon") return "무기";
+  if (category === "armor") return "방어구";
+  if (category === "accessory") return "악세";
+  if (category === "rune") return "룬";
+  if (category === "arcana") return "아르카나";
+  return "기타";
+}
+
+function groupEquipmentItems(items: CharacterDetailEquipmentItem[], options?: { includeEmptyRuneGroup?: boolean }) {
+  const sorted = [...items].sort((a, b) => {
+    const categoryDelta =
+      EQUIPMENT_CATEGORY_ORDER.indexOf(getEquipmentCategory(a.slotPosName)) -
+      EQUIPMENT_CATEGORY_ORDER.indexOf(getEquipmentCategory(b.slotPosName));
+
+    if (categoryDelta !== 0) {
+      return categoryDelta;
+    }
+
+    if (a.slotPos !== b.slotPos) {
+      return a.slotPos - b.slotPos;
+    }
+
+    return a.name.localeCompare(b.name, "ko");
+  });
+
+  const map = new Map<EquipmentCategoryKey, CharacterDetailEquipmentItem[]>();
+  for (const item of sorted) {
+    const category = getEquipmentCategory(item.slotPosName);
+    const list = map.get(category) ?? [];
+    list.push(item);
+    map.set(category, list);
+  }
+
+  return EQUIPMENT_CATEGORY_ORDER.map((category) => ({
+    category,
+    label: getEquipmentCategoryLabel(category),
+    items: map.get(category) ?? [],
+  })).filter((entry) => entry.items.length > 0 || (options?.includeEmptyRuneGroup && entry.category === "rune"));
+}
+
+function getEquipmentGradeTone(grade: string) {
+  const normalized = grade.toLowerCase();
+  if (normalized === "legend") {
+    return {
+      row: "border-amber-600/60 bg-amber-900/20",
+      badge: "border-amber-400/70 bg-amber-900/40 text-amber-200",
+      name: "text-amber-200",
+    };
+  }
+  if (normalized === "epic") {
+    return {
+      row: "border-orange-600/60 bg-orange-900/20",
+      badge: "border-orange-400/70 bg-orange-900/40 text-orange-200",
+      name: "text-orange-200",
+    };
+  }
+  if (normalized === "unique") {
+    return {
+      row: "border-yellow-600/60 bg-yellow-900/20",
+      badge: "border-yellow-400/70 bg-yellow-900/40 text-yellow-200",
+      name: "text-yellow-200",
+    };
+  }
+  if (normalized === "rare") {
+    return {
+      row: "border-sky-600/60 bg-sky-900/20",
+      badge: "border-sky-400/70 bg-sky-900/40 text-sky-200",
+      name: "text-sky-200",
+    };
+  }
+  if (normalized === "special") {
+    return {
+      row: "border-teal-600/60 bg-teal-900/20",
+      badge: "border-teal-400/70 bg-teal-900/40 text-teal-200",
+      name: "text-teal-200",
+    };
+  }
+  return {
+    row: "border-neutral-700 bg-neutral-900/70",
+    badge: "border-neutral-600 bg-neutral-800 text-neutral-300",
+    name: "text-neutral-100",
+  };
+}
+
+function formatBreakthroughSummary(items: CharacterDetailEquipmentItem[]) {
+  if (items.length === 0) {
+    return "돌파 없음";
+  }
+
+  const broken = items.filter((item) => item.exceedLevel > 0);
+  if (broken.length === 0) {
+    return "돌파 없음";
+  }
+
+  const maxLevel = broken.reduce((max, item) => Math.max(max, item.exceedLevel), 0);
+  return `돌파 ${broken.length}/${items.length} · 최대 ${maxLevel}돌`;
+}
+
+function formatRuneSummary(items: CharacterDetailEquipmentItem[]) {
+  const occupied = items.length;
+  return `장착 ${occupied}/${RUNE_SLOT_NAMES.length}`;
+}
+
+function clampBreakthroughLevel(exceedLevel: number) {
+  return Math.max(0, Math.min(exceedLevel, EQUIPMENT_BREAKTHROUGH_MAX));
+}
+
+function renderBreakthroughPips(exceedLevel: number): React.ReactNode {
+  const filled = clampBreakthroughLevel(exceedLevel);
+  return (
+    <div className="mt-1 flex items-center gap-1">
+      {Array.from({ length: EQUIPMENT_BREAKTHROUGH_MAX }, (_, index) => (
+        <span
+          key={`breakthrough-pip-${index}`}
+          className={`h-1.5 w-4 rounded-sm border ${
+            index < filled ? "border-teal-300 bg-teal-300/90" : "border-neutral-600 bg-neutral-800"
+          }`}
+        />
+      ))}
+    </div>
+  );
+}
 
 function createParty(kind: PartyKind, index: number): Party {
   const kindName = kind === "rudra" ? "루드라" : "침식";
@@ -207,6 +442,7 @@ function CharacterCard({
   assignmentStatus,
   disabled = false,
   actionButton,
+  onOpenDetail,
 }: {
   character: CharacterSummary;
   compact?: boolean;
@@ -218,7 +454,21 @@ function CharacterCard({
   assignmentStatus?: { rudra: boolean; erosion: boolean };
   disabled?: boolean;
   actionButton?: React.ReactNode;
+  onOpenDetail?: (character: CharacterSummary) => void;
 }) {
+  const profileButton = onOpenDetail ? (
+    <button
+      type="button"
+      onPointerDown={(event) => event.stopPropagation()}
+      onClick={() => onOpenDetail(character)}
+      aria-label={`${character.name} 상세정보`}
+      title="상세정보"
+      className="ml-1 inline-flex h-5 shrink-0 items-center justify-center rounded border border-neutral-600 bg-neutral-900/90 px-1.5 text-[10px] font-semibold text-neutral-200 transition hover:bg-neutral-800"
+    >
+      {"상세"}
+    </button>
+  ) : null;
+
   return (
     <div
       className={`group/card ${dense ? "min-h-18 p-2" : "min-h-20 p-3"} w-full rounded-lg ${
@@ -229,18 +479,21 @@ function CharacterCard({
     >
       {slotLayout ? (
         <div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-2 gap-y-1">
-          <p className={`truncate font-bold text-neutral-100 ${dense ? "text-sm" : "text-md"}`}>
-            <span className="max-w-[8ch] truncate align-middle inline-block">{character.name}</span>
-            <span
-              className={`ml-1 align-middle ${
-                serverEmphasis ? "font-medium text-neutral-200" : "font-normal text-neutral-400"
-              } ${
-                serverEmphasis ? (dense ? "text-sm" : "text-md") : dense ? "text-[10px]" : "text-xs"
-              }`}
-            >
-              [{character.serverName}]
-            </span>
-          </p>
+          <div className="min-w-0 flex items-center">
+            <p className={`truncate font-bold text-neutral-100 ${dense ? "text-sm" : "text-md"}`}>
+              <span className="max-w-[8ch] truncate align-middle inline-block">{character.name}</span>
+              <span
+                className={`ml-1 align-middle ${
+                  serverEmphasis ? "font-medium text-neutral-200" : "font-normal text-neutral-400"
+                } ${
+                  serverEmphasis ? (dense ? "text-sm" : "text-md") : dense ? "text-[10px]" : "text-xs"
+                }`}
+              >
+                [{character.serverName}]
+              </span>
+            </p>
+            {profileButton}
+          </div>
           <div
             className={`justify-self-end ${
               actionRevealOnHover ? "opacity-0 pointer-events-none group-hover/card:opacity-100 group-hover/card:pointer-events-auto group-focus-within/card:opacity-100 group-focus-within/card:pointer-events-auto" : ""
@@ -268,8 +521,11 @@ function CharacterCard({
         <div>
           <div className="flex items-center gap-2">
             <div className="min-w-0 flex-1">
-              <p className="max-w-[8ch] truncate text-md font-bold text-neutral-100">{character.name}</p>
-              <p className="truncate text-xs text-neutral-400">{character.serverName}</p>
+              <div className="flex items-center">
+                <p className="max-w-[8ch] truncate text-md font-bold text-neutral-100">{character.name}</p>
+                {profileButton}
+              </div>
+              <p className="truncate text-xs text-neutral-400">[{character.serverName}]</p>
             </div>
             <div
               className={`w-12 justify-center inline-flex h-9 shrink-0 items-center rounded-lg border px-2 text-[11px] font-semibold ${getClassBadgeToneClass(
@@ -359,6 +615,7 @@ function PartySlot({
   memoValue = "",
   onMemoChange,
   onMoveToWaiting,
+  onOpenDetail,
 }: {
   partyId: string;
   slotIndex: number;
@@ -366,6 +623,7 @@ function PartySlot({
   memoValue?: string;
   onMemoChange?: (partyId: string, slotIndex: number, memo: string) => void;
   onMoveToWaiting?: (partyId: string, slotIndex: number, character: CharacterSummary) => void;
+  onOpenDetail?: (character: CharacterSummary) => void;
 }) {
   const { isOver, setNodeRef } = useDroppable({
     id: `slot-${partyId}-${slotIndex}`,
@@ -399,6 +657,7 @@ function PartySlot({
               dense
               surface="slot"
               actionRevealOnHover
+              onOpenDetail={onOpenDetail}
               actionButton={
                 <button
                   type="button"
@@ -464,6 +723,14 @@ export default function PartyBuilderPage({
   const [modalLoading, setModalLoading] = useState(false);
   const [modalError, setModalError] = useState("");
   const [waitingQuery, setWaitingQuery] = useState("");
+  const [detailTarget, setDetailTarget] = useState<CharacterSummary | null>(null);
+  const [detailData, setDetailData] = useState<CharacterDetailData | null>(null);
+  const [detailLoading, setDetailLoading] = useState(false);
+  const [detailError, setDetailError] = useState("");
+  const [selectedEquipmentItem, setSelectedEquipmentItem] = useState<CharacterDetailEquipmentItem | null>(null);
+  const [equipmentItemDetail, setEquipmentItemDetail] = useState<EquipmentItemDetailData | null>(null);
+  const [equipmentItemLoading, setEquipmentItemLoading] = useState(false);
+  const [equipmentItemError, setEquipmentItemError] = useState("");
 
   const [shareLoading, setShareLoading] = useState(false);
   const [shareLink, setShareLink] = useState("");
@@ -654,6 +921,81 @@ export default function PartyBuilderPage({
       setModalError(searchError instanceof Error ? searchError.message : "검색에 실패했습니다.");
     } finally {
       setModalLoading(false);
+    }
+  };
+
+  const openCharacterDetail = async (character: CharacterSummary) => {
+    setDetailTarget(character);
+    setDetailData(null);
+    setDetailError("");
+    setSelectedEquipmentItem(null);
+    setEquipmentItemDetail(null);
+    setEquipmentItemError("");
+    setDetailLoading(true);
+
+    try {
+      const params = new URLSearchParams({
+        characterId: character.characterId,
+        serverId: String(character.serverId),
+      });
+
+      const response = await fetch(`/api/characters/detail?${params.toString()}`, {
+        cache: "no-store",
+      });
+      const payload = (await response.json()) as CharacterDetailData & { error?: string };
+      if (!response.ok) {
+        throw new Error(payload.error ?? "상세 정보를 불러오지 못했습니다.");
+      }
+
+      setDetailData(payload);
+    } catch (error) {
+      setDetailError(error instanceof Error ? error.message : "상세 정보를 불러오지 못했습니다.");
+    } finally {
+      setDetailLoading(false);
+    }
+  };
+
+  const closeEquipmentItemDetail = () => {
+    setSelectedEquipmentItem(null);
+    setEquipmentItemDetail(null);
+    setEquipmentItemError("");
+    setEquipmentItemLoading(false);
+  };
+
+  const openEquipmentItemDetail = async (item: CharacterDetailEquipmentItem) => {
+    if (!detailTarget) {
+      return;
+    }
+
+    const contextCharacterId = detailData?.profile.characterId ?? detailTarget.characterId;
+    const contextServerId = detailData?.profile.serverId ?? detailTarget.serverId;
+
+    setSelectedEquipmentItem(item);
+    setEquipmentItemDetail(null);
+    setEquipmentItemError("");
+    setEquipmentItemLoading(true);
+
+    try {
+      const params = new URLSearchParams({
+        id: String(item.id),
+        enchantLevel: String(item.enchantLevel ?? 0),
+        characterId: contextCharacterId,
+        serverId: String(contextServerId),
+        slotPos: String(item.slotPos ?? 0),
+      });
+
+      const response = await fetch(`/api/characters/equipment-item?${params.toString()}`, {
+        cache: "no-store",
+      });
+      const payload = (await response.json()) as EquipmentItemDetailData & { error?: string };
+      if (!response.ok) {
+        throw new Error(payload.error ?? "장비 상세 조회에 실패했습니다.");
+      }
+      setEquipmentItemDetail(payload);
+    } catch (error) {
+      setEquipmentItemError(error instanceof Error ? error.message : "장비 상세 조회에 실패했습니다.");
+    } finally {
+      setEquipmentItemLoading(false);
     }
   };
 
@@ -1253,6 +1595,7 @@ export default function PartyBuilderPage({
                                 dense
                                 assignmentStatus={status}
                                 disabled
+                                onOpenDetail={openCharacterDetail}
                                 actionButton={removeButton}
                               />
                             </div>
@@ -1269,6 +1612,7 @@ export default function PartyBuilderPage({
                               slotLayout
                               dense
                               assignmentStatus={status}
+                              onOpenDetail={openCharacterDetail}
                               actionButton={removeButton}
                             />
                           </DraggableCard>
@@ -1374,6 +1718,7 @@ export default function PartyBuilderPage({
                             memoValue={slotMemos[slotMemoKey(party.id, index)] ?? ""}
                             onMemoChange={updateSlotMemo}
                             onMoveToWaiting={moveSlotToWaiting}
+                            onOpenDetail={openCharacterDetail}
                           />
                         ))}
                       </div>
@@ -1402,6 +1747,7 @@ export default function PartyBuilderPage({
                             memoValue={slotMemos[slotMemoKey(party.id, index + 4)] ?? ""}
                             onMemoChange={updateSlotMemo}
                             onMoveToWaiting={moveSlotToWaiting}
+                            onOpenDetail={openCharacterDetail}
                           />
                         ))}
                       </div>
@@ -1514,6 +1860,7 @@ export default function PartyBuilderPage({
                               serverEmphasis
                               assignmentStatus={status}
                               disabled={fullyAssigned}
+                              onOpenDetail={openCharacterDetail}
                             />
                             <div className="mt-2 flex justify-end">{addButton}</div>
                           </div>
@@ -1526,6 +1873,393 @@ export default function PartyBuilderPage({
                 </div>
               </section>
             </div>
+          </div>
+        </div>
+      ) : null}
+
+      {detailTarget ? (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/60 p-4 backdrop-blur-[1px]">
+          <div className="w-full max-w-5xl rounded-xl border border-neutral-800 bg-neutral-900 p-5 shadow-xl">
+            <div className="mb-4 flex items-center justify-between gap-3">
+              <div className="min-w-0 flex items-center gap-3">
+                <div className="h-10 w-10 overflow-hidden rounded-full border border-neutral-700 bg-neutral-800">
+                  {detailData?.profile.profileImage ?? detailTarget.profileImageUrl ? (
+                    <img
+                      src={detailData?.profile.profileImage ?? detailTarget.profileImageUrl ?? ""}
+                      alt=""
+                      className="h-full w-full object-cover"
+                    />
+                  ) : (
+                    <div className="flex h-full w-full items-center justify-center text-xs text-neutral-400">N/A</div>
+                  )}
+                </div>
+                <div className="min-w-0">
+                  <h2 className="truncate text-lg font-semibold text-neutral-100">
+                    {detailTarget.name}[{detailTarget.serverName}]
+                  </h2>
+                  <p className="truncate text-xs text-neutral-400">
+                    {detailData?.profile.className || detailTarget.className || "직업 미확인"}
+                    {detailData?.profile.raceName ? ` · ${detailData.profile.raceName}` : ""}
+                    {detailData?.profile.level ? ` · Lv.${detailData.profile.level}` : ""}
+                  </p>
+                </div>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setDetailTarget(null);
+                  setDetailData(null);
+                  setDetailError("");
+                  closeEquipmentItemDetail();
+                }}
+                className="rounded-md border border-neutral-600 px-3 py-1.5 text-xs font-medium text-neutral-300 transition hover:bg-neutral-800"
+              >
+                닫기
+              </button>
+            </div>
+
+            {detailLoading ? (
+              <div className="rounded-lg border border-neutral-700 bg-neutral-800/40 px-4 py-16 text-center text-sm text-neutral-300">
+                상세 정보를 불러오는 중...
+              </div>
+            ) : detailError ? (
+              <div className="rounded-lg border border-rose-700/60 bg-rose-900/30 px-4 py-10 text-sm text-rose-200">
+                {detailError}
+              </div>
+            ) : detailData ? (
+              <div className="grid max-h-[76vh] min-h-0 grid-cols-1 gap-3 lg:grid-cols-[minmax(0,1fr)_300px]">
+                <section className="min-h-0 flex flex-col rounded-lg border border-neutral-700 bg-neutral-800/40 p-3">
+                  <h3 className="mb-2 text-sm font-semibold text-neutral-100">착용 장비</h3>
+                  <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden pr-1 scrollbar-neutral">
+                  {detailData.equipment.equipmentList.length > 0 ? (
+                    <div className="space-y-3">
+                      {groupEquipmentItems(detailData.equipment.equipmentList, { includeEmptyRuneGroup: true }).map((group) => (
+                        <div key={`equip-group-${group.category}`}>
+                          <div className="mb-1 flex items-center justify-between gap-2">
+                            <p className="text-[11px] font-semibold text-neutral-300">{group.label}</p>
+                            <p className="text-[10px] text-neutral-400">
+                              {group.category === "rune" ? formatRuneSummary(group.items) : formatBreakthroughSummary(group.items)}
+                            </p>
+                          </div>
+                          {group.category === "rune" ? (
+                            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                              {RUNE_SLOT_NAMES.map((slotName) => {
+                                const item = group.items.find((entry) => entry.slotPosName === slotName) ?? null;
+                                const tone = item ? getEquipmentGradeTone(item.grade) : null;
+                                const slotToneClass = item
+                                  ? tone?.row ?? "border-neutral-700 bg-neutral-900/70"
+                                  : "border-dashed border-neutral-700 bg-neutral-900/30";
+
+                                return (
+                                  <div
+                                    key={`rune-slot-${slotName}`}
+                                    className={`rounded-md border p-2 ${slotToneClass} ${item ? "cursor-pointer transition hover:bg-neutral-800/60" : ""}`}
+                                    onClick={item ? () => void openEquipmentItemDetail(item) : undefined}
+                                  >
+                                    <div className="flex items-center gap-2">
+                                      <div className="h-9 w-9 overflow-hidden rounded border border-neutral-700 bg-neutral-800">
+                                        {item?.icon ? (
+                                          <img src={item.icon} alt="" className="h-full w-full object-cover" />
+                                        ) : (
+                                          <div className="flex h-full w-full items-center justify-center text-[10px] text-neutral-500">
+                                            빈칸
+                                          </div>
+                                        )}
+                                      </div>
+                                      <div className="min-w-0 flex-1">
+                                        <p
+                                          className={`truncate text-xs font-semibold ${item ? tone?.name ?? "text-neutral-100" : "text-neutral-400"}`}
+                                        >
+                                          {item?.name ?? `${slotName} 비어있음`}
+                                          {item && item.enchantLevel > 0 ? (
+                                            <span className="ml-1 text-[11px] text-neutral-300">+{item.enchantLevel}</span>
+                                          ) : null}
+                                        </p>
+                                      </div>
+                                    </div>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          ) : (
+                            <div className="grid grid-cols-1 gap-2 md:grid-cols-2 xl:grid-cols-3">
+                              {group.items.map((item) => {
+                                const tone = getEquipmentGradeTone(item.grade);
+                              return (
+                                <div
+                                  key={`eq-${item.slotPosName}-${item.id}-${item.slotPos}`}
+                                  className={`flex cursor-pointer items-center gap-2 rounded-md border p-2 transition hover:bg-neutral-800/60 ${tone.row}`}
+                                  onClick={() => void openEquipmentItemDetail(item)}
+                                >
+                                  <div className="h-9 w-9 overflow-hidden rounded border border-neutral-700 bg-neutral-800">
+                                    {item.icon ? <img src={item.icon} alt="" className="h-full w-full object-cover" /> : null}
+                                  </div>
+                                    <div className="min-w-0 flex-1">
+                                      <p className={`truncate text-xs font-semibold ${tone.name}`}>
+                                        {item.name}
+                                        {item.enchantLevel > 0 ? (
+                                          <span className="ml-1 text-[11px] text-neutral-300">+{item.enchantLevel}</span>
+                                        ) : null}
+                                      </p>
+                                      {(group.category === "weapon" || group.category === "armor" || group.category === "accessory") &&
+                                      item.exceedLevel >= 0
+                                        ? renderBreakthroughPips(item.exceedLevel)
+                                        : null}
+                                  </div>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="text-xs text-neutral-400">장비 정보가 없습니다.</p>
+                  )}
+
+                  {detailData.equipment.skinList.length > 0 ? (
+                    <>
+                      <h3 className="mb-2 mt-4 text-sm font-semibold text-neutral-100">스킨 장비</h3>
+                      <div className="space-y-3">
+                        {groupEquipmentItems(detailData.equipment.skinList).map((group) => (
+                          <div key={`skin-group-${group.category}`}>
+                            <div className="mb-1 flex items-center justify-between gap-2">
+                              <p className="text-[11px] font-semibold text-neutral-300">{group.label}</p>
+                              <p className="text-[10px] text-neutral-400">
+                                {group.category === "rune" ? formatRuneSummary(group.items) : formatBreakthroughSummary(group.items)}
+                              </p>
+                            </div>
+                            <div className="grid grid-cols-1 gap-2 md:grid-cols-2 xl:grid-cols-3">
+                              {group.items.map((item) => {
+                                const tone = getEquipmentGradeTone(item.grade);
+                                return (
+                                  <div
+                                    key={`skin-${item.slotPosName}-${item.id}-${item.slotPos}`}
+                                    className={`flex cursor-pointer items-center gap-2 rounded-md border p-2 transition hover:bg-neutral-800/60 ${tone.row}`}
+                                    onClick={() => void openEquipmentItemDetail(item)}
+                                  >
+                                    <div className="h-9 w-9 overflow-hidden rounded border border-neutral-700 bg-neutral-800">
+                                      {item.icon ? <img src={item.icon} alt="" className="h-full w-full object-cover" /> : null}
+                                    </div>
+                                    <div className="min-w-0 flex-1">
+                                      <p className={`truncate text-xs font-semibold ${tone.name}`}>
+                                        {item.name}
+                                        {item.enchantLevel > 0 ? (
+                                          <span className="ml-1 text-[11px] text-neutral-300">+{item.enchantLevel}</span>
+                                        ) : null}
+                                      </p>
+                                    </div>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </>
+                  ) : null}
+                  </div>
+                </section>
+
+                <aside className="min-h-0 overflow-y-auto rounded-lg border border-neutral-700 bg-neutral-800/40 p-3 scrollbar-neutral">
+                  <h3 className="text-sm font-semibold text-neutral-100">캐릭터 정보</h3>
+                  <div className="mt-2 space-y-1 text-xs text-neutral-300">
+                    <p>IL <span className={NUM_EMPHASIS_CLASS}>{formatNumber(detailData.profile.itemLevel)}</span></p>
+                    <p className="text-sky-300">CP <span className={NUM_BLUE_EMPHASIS_CLASS}>{formatNumber(detailData.profile.combatPower)}</span></p>
+                    {detailData.profile.regionName ? <p>지역: {detailData.profile.regionName}</p> : null}
+                    <p>소스: {detailData.source}</p>
+                  </div>
+
+                  <h3 className="mt-4 text-sm font-semibold text-neutral-100">주요 스탯</h3>
+                  <div className="mt-2 space-y-1 text-xs text-neutral-300">
+                    {detailData.statList.slice(0, 12).map((stat) => (
+                      <p key={`${stat.type}-${stat.name}`} className="truncate">
+                        {stat.name || stat.type}: <span className={NUM_EMPHASIS_CLASS}>{formatNumber(stat.value)}</span>
+                      </p>
+                    ))}
+                  </div>
+
+                  <div className="mt-4 flex gap-2">
+                    <a
+                      href={detailData.links.plaync}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="inline-flex h-8 items-center rounded-md border border-neutral-600 px-2 text-xs font-medium text-neutral-200 transition hover:bg-neutral-800"
+                    >
+                      PlayNC
+                    </a>
+                    <a
+                      href={detailData.links.aon2}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="inline-flex h-8 items-center rounded-md border border-neutral-600 px-2 text-xs font-medium text-neutral-200 transition hover:bg-neutral-800"
+                    >
+                      AON2
+                    </a>
+                  </div>
+                </aside>
+              </div>
+            ) : null}
+          </div>
+        </div>
+      ) : null}
+
+      {selectedEquipmentItem ? (
+        <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/70 p-4 backdrop-blur-[1px]">
+          <div className="w-full max-w-3xl rounded-xl border border-neutral-800 bg-neutral-900 p-5 shadow-xl">
+            <div className="mb-4 flex items-center justify-between gap-3">
+              <div className="min-w-0 flex items-center gap-3">
+                <div className="h-10 w-10 overflow-hidden rounded border border-neutral-700 bg-neutral-800">
+                  {selectedEquipmentItem.icon ? (
+                    <img src={selectedEquipmentItem.icon} alt="" className="h-full w-full object-cover" />
+                  ) : null}
+                </div>
+                <div className="min-w-0">
+                  <h3 className="truncate text-base font-semibold text-neutral-100">{selectedEquipmentItem.name}</h3>
+                  <p className="text-xs text-neutral-400">
+                    {selectedEquipmentItem.slotPosName}
+                    {selectedEquipmentItem.enchantLevel > 0 ? ` · +${selectedEquipmentItem.enchantLevel}` : ""}
+                  </p>
+                </div>
+              </div>
+
+              <button
+                type="button"
+                onClick={closeEquipmentItemDetail}
+                className="rounded-md border border-neutral-600 px-3 py-1.5 text-xs font-medium text-neutral-300 transition hover:bg-neutral-800"
+              >
+                닫기
+              </button>
+            </div>
+
+            {equipmentItemLoading ? (
+              <div className="rounded-lg border border-neutral-700 bg-neutral-800/40 px-4 py-14 text-center text-sm text-neutral-300">
+                장비 상세를 불러오는 중...
+              </div>
+            ) : equipmentItemError ? (
+              <div className="rounded-lg border border-rose-700/60 bg-rose-900/30 px-4 py-10 text-sm text-rose-200">
+                {equipmentItemError}
+              </div>
+            ) : equipmentItemDetail ? (
+              <div className="max-h-[72vh] overflow-y-auto rounded-lg border border-neutral-700 bg-neutral-800/40 p-3 scrollbar-neutral">
+                {(() => {
+                  const item = equipmentItemDetail.item as Record<string, unknown>;
+                  const mainStats = Array.isArray(item.mainStats) ? (item.mainStats as Record<string, unknown>[]) : [];
+                  const subStats = Array.isArray(item.subStats) ? (item.subStats as Record<string, unknown>[]) : [];
+                  const magicStoneStats = Array.isArray(item.magicStoneStat)
+                    ? (item.magicStoneStat as Record<string, unknown>[])
+                    : [];
+                  const godStoneStats = Array.isArray(item.godStoneStat) ? (item.godStoneStat as Record<string, unknown>[]) : [];
+                  const sources = Array.isArray(item.sources) ? (item.sources as unknown[]).map((value) => String(value)) : [];
+                  const classNames = Array.isArray(item.classNames)
+                    ? (item.classNames as unknown[]).map((value) => String(value))
+                    : [];
+                  const soulBindRate = String(item.soulBindRate ?? "").trim();
+                  const subStatRandom = Boolean(item.subStatRandom);
+                  const sourceWarnings =
+                    Array.isArray(equipmentItemDetail.warnings) && equipmentItemDetail.warnings.length > 0
+                      ? equipmentItemDetail.warnings.join(" | ")
+                      : "";
+                  const isCharacterTuned =
+                    equipmentItemDetail.source === "plaync-equipment-item" &&
+                    equipmentItemDetail.characterContextApplied !== false;
+
+                  return (
+                    <>
+                      {!isCharacterTuned ? (
+                        <div className="mb-3 rounded-md border border-amber-700/60 bg-amber-900/30 px-3 py-2 text-xs text-amber-200">
+                          캐릭터 조율 정보(영혼각인 적용값) 조회에 실패해 기본 장비 정보로 대체되었습니다.
+                          {sourceWarnings ? <span className="block mt-1 text-[10px] text-amber-300/90">{sourceWarnings}</span> : null}
+                        </div>
+                      ) : null}
+
+                      <div className="mb-3 grid grid-cols-1 gap-2 sm:grid-cols-2">
+                        <div className="rounded-md border border-neutral-700 bg-neutral-900/70 px-3 py-2">
+                          <p className="text-[10px] text-neutral-400">영혼각인 수치</p>
+                          <p className="text-sm font-semibold text-teal-200">{soulBindRate || "-"}</p>
+                        </div>
+                        <div className="rounded-md border border-neutral-700 bg-neutral-900/70 px-3 py-2">
+                          <p className="text-[10px] text-neutral-400">조율 가능 여부</p>
+                          <p className="text-sm font-semibold text-neutral-100">{subStatRandom ? "가능" : "고정"}</p>
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-2 gap-2 text-xs text-neutral-300">
+                        <p>등급: {String(item.gradeName ?? item.grade ?? "-")}</p>
+                        <p>장비레벨: {String(item.equipLevel ?? "-")}</p>
+                        <p>카테고리: {String(item.categoryName ?? "-")}</p>
+                        <p>종족: {String(item.raceName ?? "-")}</p>
+                        <p>최대 강화: {String(item.maxEnchantLevel ?? "-")}</p>
+                        <p>최대 돌파: {String(item.maxExceedEnchantLevel ?? "-")}</p>
+                        {classNames.length > 0 ? <p className="col-span-2">착용 클래스: {classNames.join(", ")}</p> : null}
+                      </div>
+
+                      {mainStats.length > 0 ? (
+                        <>
+                          <h4 className="mt-4 text-sm font-semibold text-neutral-100">주 스탯</h4>
+                          <div className="mt-1 space-y-1 text-xs text-neutral-300">
+                            {mainStats.map((stat, index) => (
+                              <p key={`main-${index}`} className="truncate">
+                                {String(stat.name ?? "-")}: <span className={NUM_EMPHASIS_CLASS}>{String(stat.value ?? "-")}</span>
+                                {stat.extra ? <span className="text-neutral-400"> (추가 {String(stat.extra)})</span> : null}
+                              </p>
+                            ))}
+                          </div>
+                        </>
+                      ) : null}
+
+                      {subStats.length > 0 ? (
+                        <>
+                          <h4 className="mt-4 text-sm font-semibold text-neutral-100">영혼각인/조율 옵션</h4>
+                          <div className="mt-1 space-y-1 text-xs text-neutral-300">
+                            {subStats.map((stat, index) => (
+                              <p key={`sub-${index}`} className="truncate">
+                                {String(stat.name ?? "-")}: <span className={NUM_EMPHASIS_CLASS}>{String(stat.value ?? "-")}</span>
+                              </p>
+                            ))}
+                          </div>
+                        </>
+                      ) : null}
+
+                      {magicStoneStats.length > 0 ? (
+                        <>
+                          <h4 className="mt-4 text-sm font-semibold text-neutral-100">마석</h4>
+                          <div className="mt-1 space-y-1 text-xs text-neutral-300">
+                            {magicStoneStats.map((stat, index) => (
+                              <p key={`magic-${index}`} className="truncate">
+                                {String(stat.name ?? "-")} {String(stat.value ?? "")}
+                              </p>
+                            ))}
+                          </div>
+                        </>
+                      ) : null}
+
+                      {godStoneStats.length > 0 ? (
+                        <>
+                          <h4 className="mt-4 text-sm font-semibold text-neutral-100">신석</h4>
+                          <div className="mt-1 space-y-1 text-xs text-neutral-300">
+                            {godStoneStats.map((stat, index) => (
+                              <p key={`god-${index}`} className="truncate">
+                                {String(stat.name ?? "-")}
+                              </p>
+                            ))}
+                          </div>
+                        </>
+                      ) : null}
+
+                      {sources.length > 0 ? (
+                        <>
+                          <h4 className="mt-4 text-sm font-semibold text-neutral-100">획득처</h4>
+                          <p className="mt-1 text-xs text-neutral-300">{sources.join(", ")}</p>
+                        </>
+                      ) : null}
+                    </>
+                  );
+                })()}
+              </div>
+            ) : null}
           </div>
         </div>
       ) : null}
