@@ -21,9 +21,32 @@ type CharacterSkill = {
   needLevel: number;
   category: string;
   skillLevel: number;
+  targetLevel: number;
   acquired: number;
   equip: number;
   icon: string | null;
+};
+
+type RankerSkillStat = {
+  name: string;
+  pickRate: number;
+  highTierCount: number;
+  totalUsers: number;
+};
+
+type RankerSkillStatsByCategory = {
+  active: RankerSkillStat[];
+  passive: RankerSkillStat[];
+  stigma: RankerSkillStat[];
+};
+
+type A2ToolSkillStatsPayload = {
+  success?: boolean;
+  data?: {
+    active?: UnknownRecord[];
+    passive?: UnknownRecord[];
+    stigma?: UnknownRecord[];
+  };
 };
 
 function toNumber(value: unknown, fallback = 0): number {
@@ -54,7 +77,15 @@ function asRecord(value: unknown): UnknownRecord | undefined {
   return value as UnknownRecord;
 }
 
-async function fetchJson<T>(url: string, timeoutMs = 8000): Promise<T> {
+function asArray(value: unknown): unknown[] {
+  return Array.isArray(value) ? value : [];
+}
+
+function normalizeSkillName(value: string): string {
+  return value.toLowerCase().replace(/[\s·ㆍ\-_]/g, "");
+}
+
+async function fetchJson<T>(url: string, timeoutMs = 8000, headers?: HeadersInit): Promise<T> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
 
@@ -66,6 +97,7 @@ async function fetchJson<T>(url: string, timeoutMs = 8000): Promise<T> {
         accept: "application/json, text/plain, */*",
         "user-agent":
           "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+        ...(headers ?? {}),
       },
     });
 
@@ -77,6 +109,51 @@ async function fetchJson<T>(url: string, timeoutMs = 8000): Promise<T> {
   } finally {
     clearTimeout(timeout);
   }
+}
+
+function mapRankerSkillList(list: unknown): RankerSkillStat[] {
+  return asArray(list)
+    .map((entry) => asRecord(entry))
+    .filter((entry): entry is UnknownRecord => Boolean(entry))
+    .map((entry) => ({
+      name: String(entry.name ?? "").trim(),
+      pickRate: toNumber(entry.pick_rate ?? entry.total_pick_rate, 0),
+      highTierCount: toNumber(entry.high_tier_count, 0),
+      totalUsers: toNumber(entry.total_users, 0),
+    }))
+    .filter((entry) => entry.name.length > 0 && (entry.pickRate > 0 || entry.highTierCount > 0))
+    .sort((a, b) => {
+      if (b.pickRate !== a.pickRate) {
+        return b.pickRate - a.pickRate;
+      }
+      return b.highTierCount - a.highTierCount;
+    });
+}
+
+async function fetchA2ToolSkillStats(jobName: string): Promise<RankerSkillStatsByCategory | null> {
+  if (!jobName.trim()) {
+    return null;
+  }
+
+  const encoded = encodeURIComponent(jobName);
+  const payload = await fetchJson<A2ToolSkillStatsPayload>(
+    `https://aion2tool.com/api/stats/skills?job=${encoded}`,
+    10_000,
+    {
+      origin: "https://aion2tool.com",
+      referer: "https://aion2tool.com/statistics/skill",
+    },
+  );
+
+  if (!payload.success || !payload.data) {
+    return null;
+  }
+
+  return {
+    active: mapRankerSkillList(payload.data.active),
+    passive: mapRankerSkillList(payload.data.passive),
+    stigma: mapRankerSkillList(payload.data.stigma),
+  };
 }
 
 function mapEquipmentList(list: unknown): EquipmentItem[] {
@@ -126,6 +203,7 @@ function mapSkillList(list: unknown): CharacterSkill[] {
       needLevel: toNumber(entry.needLevel, 0),
       category: String(entry.category ?? "").trim(),
       skillLevel: toNumber(entry.skillLevel, 0),
+      targetLevel: 0,
       acquired: toNumber(entry.acquired, 0),
       equip: toNumber(entry.equip, 0),
       icon: toOptionalString(entry.icon) ?? null,
@@ -160,6 +238,41 @@ function pickSkillEntries(
       }
       return a.name.localeCompare(b.name, "ko");
     });
+}
+
+function pickHighInvestmentSkillNames(stats: RankerSkillStat[]): Set<string> {
+  if (stats.length === 0) {
+    return new Set<string>();
+  }
+
+  const topPickRate = stats[0]?.pickRate ?? 0;
+  const topHighTier = stats[0]?.highTierCount ?? 0;
+  const pickRateThreshold = Math.max(10, topPickRate * 0.5);
+  const highTierThreshold = Math.max(8, Math.floor(topHighTier * 0.45));
+
+  const selected = stats
+    .filter((entry) => entry.pickRate >= pickRateThreshold || entry.highTierCount >= highTierThreshold)
+    .slice(0, 6);
+
+  return new Set(selected.map((entry) => normalizeSkillName(entry.name)));
+}
+
+function applySkillTargets(
+  skills: CharacterSkill[],
+  category: "active" | "passive" | "stigma",
+  highInvestmentSkillNames: Set<string>,
+): CharacterSkill[] {
+  const groupMax = skills.reduce((max, skill) => Math.max(max, skill.skillLevel), 0);
+  const groupTarget = category === "active" ? 20 : Math.max(1, groupMax);
+
+  return skills.map((skill) => {
+    const isRecommended = highInvestmentSkillNames.has(normalizeSkillName(skill.name));
+    const targetLevel = isRecommended ? Math.max(skill.skillLevel, groupTarget) : skill.skillLevel;
+    return {
+      ...skill,
+      targetLevel,
+    };
+  });
 }
 
 export async function GET(request: NextRequest) {
@@ -205,9 +318,35 @@ export async function GET(request: NextRequest) {
     const equipmentRoot = asRecord(equipmentPayload.equipment) ?? {};
     const skillRoot = asRecord(equipmentPayload.skill) ?? {};
     const skillList = mapSkillList(skillRoot.skillList);
-    const activeSkills = pickSkillEntries(skillList, "active");
-    const passiveSkills = pickSkillEntries(skillList, "passive");
-    const stigmaSkills = pickSkillEntries(skillList, "stigma");
+    const className = toOptionalString(profile.className) ?? "";
+
+    const activeSkillsRaw = pickSkillEntries(skillList, "active");
+    const passiveSkillsRaw = pickSkillEntries(skillList, "passive");
+    const stigmaSkillsRaw = pickSkillEntries(skillList, "stigma");
+
+    let rankerStats: RankerSkillStatsByCategory | null = null;
+    try {
+      rankerStats = className ? await fetchA2ToolSkillStats(className) : null;
+    } catch {
+      rankerStats = null;
+    }
+
+    const activeRecommended =
+      rankerStats && rankerStats.active.length > 0
+        ? pickHighInvestmentSkillNames(rankerStats.active)
+        : new Set<string>();
+    const passiveRecommended =
+      rankerStats && rankerStats.passive.length > 0
+        ? pickHighInvestmentSkillNames(rankerStats.passive)
+        : new Set<string>();
+    const stigmaRecommended =
+      rankerStats && rankerStats.stigma.length > 0
+        ? pickHighInvestmentSkillNames(rankerStats.stigma)
+        : new Set<string>();
+
+    const activeSkills = applySkillTargets(activeSkillsRaw, "active", activeRecommended);
+    const passiveSkills = applySkillTargets(passiveSkillsRaw, "passive", passiveRecommended);
+    const stigmaSkills = applySkillTargets(stigmaSkillsRaw, "stigma", stigmaRecommended);
 
     return NextResponse.json({
       source: "plaync-api",
@@ -216,7 +355,7 @@ export async function GET(request: NextRequest) {
         characterName: toOptionalString(profile.characterName) ?? "",
         serverId: toNumber(profile.serverId, serverId),
         serverName: toOptionalString(profile.serverName) ?? "",
-        className: toOptionalString(profile.className) ?? "",
+        className,
         raceName: toOptionalString(profile.raceName) ?? "",
         regionName: toOptionalString(profile.regionName) ?? "",
         level: toNumber(profile.characterLevel, 0),

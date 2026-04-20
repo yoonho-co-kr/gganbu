@@ -64,6 +64,7 @@ type CharacterDetailData = {
       needLevel: number;
       category: string;
       skillLevel: number;
+      targetLevel: number;
       acquired: number;
       equip: number;
       icon: string | null;
@@ -74,6 +75,7 @@ type CharacterDetailData = {
       needLevel: number;
       category: string;
       skillLevel: number;
+      targetLevel: number;
       acquired: number;
       equip: number;
       icon: string | null;
@@ -84,6 +86,7 @@ type CharacterDetailData = {
       needLevel: number;
       category: string;
       skillLevel: number;
+      targetLevel: number;
       acquired: number;
       equip: number;
       icon: string | null;
@@ -108,6 +111,62 @@ type EquipmentItemDetailData = {
   source: string;
   characterContextApplied?: boolean;
   item: Record<string, unknown>;
+  warnings?: string[];
+};
+
+type SpecupRecommendationData = {
+  source: string;
+  character: {
+    nickname: string;
+    serverId: number;
+    race: string;
+    className: string;
+    itemLevel: number;
+    combatPower: number;
+  };
+  magicStone: {
+    totalCpContrib: number;
+    items: Array<{
+      rank: number;
+      itemName: string;
+      iconUrl: string | null;
+      totalCpContrib: number;
+      engravingCount: number;
+      stats: Array<{
+        name: string;
+        value: string;
+        cpContrib: number;
+      }>;
+    }>;
+  };
+  breakthrough: {
+    items: Array<{
+      rank: number;
+      itemName: string;
+      iconUrl: string | null;
+      currentExceedLevel: number;
+      nextExceedLevel: number;
+      cpGain: number;
+      expectedKina: number | null;
+      cpPerMil: number | null;
+      stats: Array<{
+        name: string;
+        change: string;
+        cp: number;
+      }>;
+    }>;
+  };
+  other: {
+    items: Array<{
+      key: string;
+      title: string;
+      reason: string;
+      currentValue: string;
+      targetValue: string;
+      priority: "high" | "medium" | "low";
+      examples: string[];
+    }>;
+  };
   warnings?: string[];
 };
 
@@ -357,6 +416,19 @@ function formatAverage(value: number | null) {
     return "-";
   }
   return Math.round(value).toLocaleString("ko-KR");
+}
+
+function formatKina(value: number | null) {
+  if (value === null || value <= 0) {
+    return "-";
+  }
+  if (value >= 100_000_000) {
+    return `${(value / 100_000_000).toFixed(1)}억`;
+  }
+  if (value >= 10_000) {
+    return `${(value / 10_000).toFixed(1)}만`;
+  }
+  return value.toLocaleString("ko-KR");
 }
 
 function calculatePartyAverage(slots: Array<CharacterSummary | null>) {
@@ -759,6 +831,10 @@ export default function PartyBuilderPage({
   const [detailData, setDetailData] = useState<CharacterDetailData | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailError, setDetailError] = useState("");
+  const [specupData, setSpecupData] = useState<SpecupRecommendationData | null>(null);
+  const [specupLoading, setSpecupLoading] = useState(false);
+  const [specupError, setSpecupError] = useState("");
+  const [specupTab, setSpecupTab] = useState<"magic-stone" | "breakthrough" | "other">("magic-stone");
   const [skinEquipmentCollapsed, setSkinEquipmentCollapsed] = useState(true);
   const [selectedEquipmentItem, setSelectedEquipmentItem] = useState<CharacterDetailEquipmentItem | null>(null);
   const [equipmentItemDetail, setEquipmentItemDetail] = useState<EquipmentItemDetailData | null>(null);
@@ -775,6 +851,7 @@ export default function PartyBuilderPage({
   const [specRefreshError, setSpecRefreshError] = useState("");
 
   const [activeDrag, setActiveDrag] = useState<DragPayload | null>(null);
+  const specupRequestIdRef = useRef(0);
 
   const sensors = useSensors(
     useSensor(MouseSensor, { activationConstraint: { distance: 4 } }),
@@ -821,6 +898,13 @@ export default function PartyBuilderPage({
 
     return map;
   }, [parties]);
+
+  const aion2ToolCharUrl = useMemo(() => {
+    if (!detailTarget) {
+      return "";
+    }
+    return `https://aion2tool.com/char/serverid=${detailTarget.serverId}/${encodeURIComponent(detailTarget.name)}`;
+  }, [detailTarget]);
 
   useEffect(() => {
     if (hasInitialSnapshot) {
@@ -957,10 +1041,55 @@ export default function PartyBuilderPage({
     }
   };
 
+  const loadSpecupRecommendations = async (character: CharacterSummary, raceName?: string) => {
+    const requestId = ++specupRequestIdRef.current;
+    setSpecupLoading(true);
+    setSpecupError("");
+    setSpecupData(null);
+
+    try {
+      const params = new URLSearchParams({
+        name: character.name,
+        serverId: String(character.serverId),
+      });
+
+      if (raceName) {
+        params.set("raceName", raceName);
+      }
+
+      const response = await fetch(`/api/characters/specup?${params.toString()}`, {
+        cache: "no-store",
+      });
+      const payload = (await response.json()) as SpecupRecommendationData & { error?: string };
+      if (!response.ok) {
+        throw new Error(payload.error ?? "스펙업 추천 정보를 불러오지 못했습니다.");
+      }
+      if (specupRequestIdRef.current !== requestId) {
+        return;
+      }
+      setSpecupData(payload);
+    } catch (error) {
+      if (specupRequestIdRef.current !== requestId) {
+        return;
+      }
+      setSpecupData(null);
+      setSpecupError(error instanceof Error ? error.message : "스펙업 추천 정보를 불러오지 못했습니다.");
+    } finally {
+      if (specupRequestIdRef.current !== requestId) {
+        return;
+      }
+      setSpecupLoading(false);
+    }
+  };
+
   const openCharacterDetail = async (character: CharacterSummary) => {
     setDetailTarget(character);
     setDetailData(null);
     setDetailError("");
+    setSpecupData(null);
+    setSpecupError("");
+    setSpecupTab("magic-stone");
+    setSpecupLoading(false);
     setSkinEquipmentCollapsed(true);
     setSelectedEquipmentItem(null);
     setEquipmentItemDetail(null);
@@ -982,6 +1111,7 @@ export default function PartyBuilderPage({
       }
 
       setDetailData(payload);
+      void loadSpecupRecommendations(character, payload.profile.raceName || undefined);
     } catch (error) {
       setDetailError(error instanceof Error ? error.message : "상세 정보를 불러오지 못했습니다.");
     } finally {
@@ -1942,9 +2072,14 @@ export default function PartyBuilderPage({
               <button
                 type="button"
                 onClick={() => {
+                  specupRequestIdRef.current += 1;
                   setDetailTarget(null);
                   setDetailData(null);
                   setDetailError("");
+                  setSpecupData(null);
+                  setSpecupError("");
+                  setSpecupLoading(false);
+                  setSpecupTab("magic-stone");
                   closeEquipmentItemDetail();
                 }}
                 className="rounded-md border border-neutral-600 px-3 py-1.5 text-xs font-medium text-neutral-300 transition hover:bg-neutral-800"
@@ -1962,8 +2097,9 @@ export default function PartyBuilderPage({
                 {detailError}
               </div>
             ) : detailData ? (
-              <div className="grid max-h-[80vh] min-h-0 grid-cols-1 gap-3 lg:grid-cols-[minmax(0,1fr)_300px]">
-                <section className="h-full min-h-0 flex flex-col rounded-lg border border-neutral-700 bg-neutral-800/40 p-3">
+              <div className="max-h-[80vh] min-h-0 space-y-3 overflow-y-auto pr-1 scrollbar-neutral">
+                <div className="grid min-h-0 grid-cols-1 gap-3 lg:grid-cols-[minmax(0,1fr)_300px]">
+                  <section className="h-full min-h-0 flex flex-col rounded-lg border border-neutral-700 bg-neutral-800/40 p-3">
                   <h3 className="mb-2 text-sm font-semibold text-neutral-100">착용 장비</h3>
                   <div className="relative h-full flex-1 overflow-y-auto pr-1 scrollbar-neutral">
                   <div className="absolute h-full min-h-0 flex-1 overflow-y-auto overflow-x-hidden pr-1 scrollbar-neutral">
@@ -2069,7 +2205,11 @@ export default function PartyBuilderPage({
                                   {skill.icon ? <img src={skill.icon} alt="" className="h-full w-full object-cover" /> : null}
                                 </span>
                                 <span className="truncate">{skill.name}</span>
-                                <span className={`ml-auto shrink-0 ${NUM_EMPHASIS_CLASS}`}>+{skill.skillLevel}</span>
+                                <span className="ml-auto shrink-0 text-[10px] text-neutral-400">
+                                  <span className={NUM_EMPHASIS_CLASS}>+{skill.skillLevel}</span>
+                                  <span className="mx-1 text-neutral-600">/</span>
+                                  목표 <span className="font-semibold text-emerald-300">+{skill.targetLevel}</span>
+                                </span>
                               </p>
                             ))
                           ) : (
@@ -2090,7 +2230,11 @@ export default function PartyBuilderPage({
                                   {skill.icon ? <img src={skill.icon} alt="" className="h-full w-full object-cover" /> : null}
                                 </span>
                                 <span className="truncate">{skill.name}</span>
-                                <span className={`ml-auto shrink-0 ${NUM_EMPHASIS_CLASS}`}>+{skill.skillLevel}</span>
+                                <span className="ml-auto shrink-0 text-[10px] text-neutral-400">
+                                  <span className={NUM_EMPHASIS_CLASS}>+{skill.skillLevel}</span>
+                                  <span className="mx-1 text-neutral-600">/</span>
+                                  목표 <span className="font-semibold text-emerald-300">+{skill.targetLevel}</span>
+                                </span>
                               </p>
                             ))
                           ) : (
@@ -2111,7 +2255,11 @@ export default function PartyBuilderPage({
                                   {skill.icon ? <img src={skill.icon} alt="" className="h-full w-full object-cover" /> : null}
                                 </span>
                                 <span className="truncate">{skill.name}</span>
-                                <span className={`ml-auto shrink-0 ${NUM_EMPHASIS_CLASS}`}>+{skill.skillLevel}</span>
+                                <span className="ml-auto shrink-0 text-[10px] text-neutral-400">
+                                  <span className={NUM_EMPHASIS_CLASS}>+{skill.skillLevel}</span>
+                                  <span className="mx-1 text-neutral-600">/</span>
+                                  목표 <span className="font-semibold text-emerald-300">+{skill.targetLevel}</span>
+                                </span>
                               </p>
                             ))
                           ) : (
@@ -2177,45 +2325,262 @@ export default function PartyBuilderPage({
                   ) : null}
                   </div>
                   </div>
+                  </section>
+
+                  <aside className="min-h-0 overflow-y-auto rounded-lg border border-neutral-700 bg-neutral-800/40 p-3 scrollbar-neutral">
+                    <h3 className="text-sm font-semibold text-neutral-100">캐릭터 정보</h3>
+                    <div className="mt-2 space-y-1 text-xs text-neutral-300">
+                      <p>IL <span className={NUM_EMPHASIS_CLASS}>{formatNumber(detailData.profile.itemLevel)}</span></p>
+                      <p className="text-sky-300">CP <span className={NUM_BLUE_EMPHASIS_CLASS}>{formatNumber(detailData.profile.combatPower)}</span></p>
+                      {detailData.profile.regionName ? <p>지역: {detailData.profile.regionName}</p> : null}
+                      <p>소스: {detailData.source}</p>
+                    </div>
+
+                    <h3 className="mt-4 text-sm font-semibold text-neutral-100">주요 스탯</h3>
+                    <div className="mt-2 space-y-1 text-xs text-neutral-300">
+                      {detailData.statList.slice(0, 12).map((stat) => (
+                        <p key={`${stat.type}-${stat.name}`} className="truncate">
+                          {stat.name || stat.type}: <span className={NUM_EMPHASIS_CLASS}>{formatNumber(stat.value)}</span>
+                        </p>
+                      ))}
+                    </div>
+
+                    <div className="mt-4 flex gap-2">
+                      <a
+                        href={detailData.links.plaync}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="inline-flex h-8 items-center rounded-md border border-neutral-600 px-2 text-xs font-medium text-neutral-200 transition hover:bg-neutral-800"
+                      >
+                        PlayNC
+                      </a>
+                      <a
+                        href={detailData.links.aon2}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="inline-flex h-8 items-center rounded-md border border-neutral-600 px-2 text-xs font-medium text-neutral-200 transition hover:bg-neutral-800"
+                      >
+                        AON2
+                      </a>
+                    </div>
+                  </aside>
+                </div>
+
+                <section className="rounded-lg border border-neutral-700 bg-neutral-800/40 p-3">
+                  <div className="flex items-center justify-between gap-2">
+                    <h3 className="text-sm font-semibold text-neutral-100">A2Tool 스펙업 추천</h3>
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (!detailTarget) {
+                            return;
+                          }
+                          void loadSpecupRecommendations(detailTarget, detailData?.profile.raceName || undefined);
+                        }}
+                        disabled={specupLoading || !detailTarget}
+                        className="inline-flex h-8 items-center rounded-md border border-blue-500 px-2 text-xs font-semibold text-blue-400 transition hover:bg-blue-500/10 disabled:cursor-not-allowed disabled:opacity-40"
+                      >
+                        재조회
+                      </button>
+                      <a
+                        href={aion2ToolCharUrl}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="inline-flex h-8 items-center rounded-md border border-neutral-600 px-2 text-xs font-medium text-neutral-200 transition hover:bg-neutral-800"
+                      >
+                        새창
+                      </a>
+                    </div>
+                  </div>
+
+                  {specupLoading ? (
+                    <div className="mt-2 rounded-md border border-neutral-700 bg-neutral-900/50 px-3 py-6 text-center text-xs text-neutral-300">
+                      스펙업 추천 데이터를 불러오는 중...
+                    </div>
+                  ) : specupError ? (
+                    <div className="mt-2 rounded-md border border-rose-700/60 bg-rose-900/20 px-3 py-3 text-xs text-rose-200">
+                      {specupError}
+                    </div>
+                  ) : specupData ? (
+                    <div className="mt-2 space-y-2">
+                      <div className="flex items-center gap-2 text-xs">
+                        <button
+                          type="button"
+                          onClick={() => setSpecupTab("magic-stone")}
+                          className={`inline-flex h-7 items-center rounded-md border px-2 font-semibold transition ${
+                            specupTab === "magic-stone"
+                              ? "border-violet-500 bg-violet-500/15 text-violet-200"
+                              : "border-neutral-700 text-neutral-300 hover:bg-neutral-800"
+                          }`}
+                        >
+                          마석 각인
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setSpecupTab("breakthrough")}
+                          className={`inline-flex h-7 items-center rounded-md border px-2 font-semibold transition ${
+                            specupTab === "breakthrough"
+                              ? "border-sky-500 bg-sky-500/15 text-sky-200"
+                              : "border-neutral-700 text-neutral-300 hover:bg-neutral-800"
+                          }`}
+                        >
+                          돌파
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setSpecupTab("other")}
+                          className={`inline-flex h-7 items-center rounded-md border px-2 font-semibold transition ${
+                            specupTab === "other"
+                              ? "border-emerald-500 bg-emerald-500/15 text-emerald-200"
+                              : "border-neutral-700 text-neutral-300 hover:bg-neutral-800"
+                          }`}
+                        >
+                          기타 추천
+                        </button>
+                        <span className="ml-auto text-neutral-400">
+                          기준 CP{" "}
+                          <span className={NUM_BLUE_EMPHASIS_CLASS}>{formatNumber(specupData.character.combatPower)}</span>
+                        </span>
+                      </div>
+
+                      {specupTab === "magic-stone" ? (
+                        <>
+                          <p className="text-xs text-neutral-400">
+                            장비별 마석 합산 기여가 낮은 순으로 정렬됩니다.
+                            <span className="ml-1 text-violet-300">
+                              총 기여 +{Math.round(specupData.magicStone.totalCpContrib).toLocaleString("ko-KR")}
+                            </span>
+                          </p>
+                          {specupData.magicStone.items.length > 0 ? (
+                            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 xl:grid-cols-3">
+                              {specupData.magicStone.items.slice(0, 12).map((item) => (
+                                <div key={`specup-ms-${item.rank}-${item.itemName}`} className="rounded-md border border-neutral-700 bg-neutral-900/60 p-2">
+                                  <div className="flex items-center gap-2">
+                                    <div className="h-7 w-7 overflow-hidden rounded border border-neutral-700 bg-neutral-800">
+                                      {item.iconUrl ? <img src={item.iconUrl} alt="" className="h-full w-full object-cover" /> : null}
+                                    </div>
+                                    <p className="min-w-0 flex-1 truncate text-xs font-semibold text-neutral-100">{item.itemName}</p>
+                                    <span className="text-[10px] font-semibold text-violet-300">{item.rank}위</span>
+                                  </div>
+                                  <p className="mt-1 text-[11px] text-neutral-300">
+                                    기여 전투력{" "}
+                                    <span className="font-bold text-violet-200">
+                                      +{Math.round(item.totalCpContrib).toLocaleString("ko-KR")}
+                                    </span>
+                                  </p>
+                                  <div className="mt-1 space-y-0.5 text-[10px] text-neutral-400">
+                                    {item.stats.slice(0, 3).map((stat, index) => (
+                                      <p key={`specup-ms-stat-${item.rank}-${index}`} className="truncate">
+                                        {stat.name} {stat.value} ·{" "}
+                                        <span className="font-semibold text-neutral-200">
+                                          +{Math.round(stat.cpContrib).toLocaleString("ko-KR")}
+                                        </span>
+                                      </p>
+                                    ))}
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          ) : (
+                            <p className="rounded-md border border-neutral-700 bg-neutral-900/50 px-3 py-4 text-center text-xs text-neutral-400">
+                              마석 각인 데이터가 없습니다.
+                            </p>
+                          )}
+                        </>
+                      ) : specupTab === "breakthrough" ? (
+                        <>
+                          <p className="text-xs text-neutral-400">100만 키나당 전투력 효율 기준으로 정렬됩니다.</p>
+                          {specupData.breakthrough.items.length > 0 ? (
+                            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                              {specupData.breakthrough.items.slice(0, 12).map((item) => (
+                                <div key={`specup-bt-${item.rank}-${item.itemName}`} className="rounded-md border border-neutral-700 bg-neutral-900/60 p-2">
+                                  <div className="flex items-center gap-2">
+                                    <div className="h-7 w-7 overflow-hidden rounded border border-neutral-700 bg-neutral-800">
+                                      {item.iconUrl ? <img src={item.iconUrl} alt="" className="h-full w-full object-cover" /> : null}
+                                    </div>
+                                    <p className="min-w-0 flex-1 truncate text-xs font-semibold text-neutral-100">{item.itemName}</p>
+                                    <span className="text-[10px] font-semibold text-sky-300">{item.rank}위</span>
+                                  </div>
+                                  <div className="mt-1 grid grid-cols-3 gap-1 text-[11px] text-neutral-300">
+                                    <p>
+                                      돌파 <span className="font-semibold text-neutral-100">{item.currentExceedLevel}</span>→
+                                      <span className="font-semibold text-neutral-100">{item.nextExceedLevel}</span>
+                                    </p>
+                                    <p>
+                                      CP <span className="font-bold text-sky-200">+{Math.round(item.cpGain).toLocaleString("ko-KR")}</span>
+                                    </p>
+                                    <p>
+                                      기댓값 <span className="font-semibold text-orange-300">{formatKina(item.expectedKina)}</span>
+                                    </p>
+                                  </div>
+                                  <p className="mt-1 text-[10px] text-neutral-400">
+                                    100만 키나당{" "}
+                                    <span className="font-semibold text-sky-200">
+                                      {item.cpPerMil !== null ? `+${item.cpPerMil.toFixed(1)}` : "-"}
+                                    </span>
+                                  </p>
+                                </div>
+                              ))}
+                            </div>
+                          ) : (
+                            <p className="rounded-md border border-neutral-700 bg-neutral-900/50 px-3 py-4 text-center text-xs text-neutral-400">
+                              돌파 추천 데이터가 없습니다.
+                            </p>
+                          )}
+                        </>
+                      ) : (
+                        <>
+                          <p className="text-xs text-neutral-400">돌파/마석 외 성장 지점을 우선순위로 제안합니다.</p>
+                          {specupData.other.items.length > 0 ? (
+                            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                              {specupData.other.items.map((item) => (
+                                <div key={`specup-other-${item.key}`} className="rounded-md border border-neutral-700 bg-neutral-900/60 p-2">
+                                  <div className="flex items-center justify-between gap-2">
+                                    <p className="text-xs font-semibold text-neutral-100">{item.title}</p>
+                                    <span
+                                      className={`rounded px-1.5 py-0.5 text-[10px] font-semibold ${
+                                        item.priority === "high"
+                                          ? "border border-rose-700/70 bg-rose-900/30 text-rose-200"
+                                          : item.priority === "medium"
+                                            ? "border border-amber-700/70 bg-amber-900/30 text-amber-200"
+                                            : "border border-neutral-700 bg-neutral-800 text-neutral-300"
+                                      }`}
+                                    >
+                                      {item.priority === "high" ? "높음" : item.priority === "medium" ? "보통" : "낮음"}
+                                    </span>
+                                  </div>
+                                  <p className="mt-1 text-[11px] text-neutral-300">{item.reason}</p>
+                                  <p className="mt-1 text-[11px] text-neutral-400">
+                                    현재 <span className="font-semibold text-neutral-200">{item.currentValue}</span> · 목표{" "}
+                                    <span className="font-semibold text-emerald-300">{item.targetValue}</span>
+                                  </p>
+                                  {item.examples.length > 0 ? (
+                                    <div className="mt-1 space-y-0.5 text-[10px] text-neutral-400">
+                                      {item.examples.map((example, index) => (
+                                        <p key={`specup-other-example-${item.key}-${index}`} className="truncate">
+                                          - {example}
+                                        </p>
+                                      ))}
+                                    </div>
+                                  ) : null}
+                                </div>
+                              ))}
+                            </div>
+                          ) : (
+                            <p className="rounded-md border border-neutral-700 bg-neutral-900/50 px-3 py-4 text-center text-xs text-neutral-400">
+                              추가 추천 항목이 없습니다.
+                            </p>
+                          )}
+                        </>
+                      )}
+                    </div>
+                  ) : (
+                    <p className="mt-2 text-xs text-neutral-400">
+                      스펙업 추천 데이터를 불러오지 못했습니다. 새창 버튼으로 A2Tool 원본 페이지를 확인할 수 있습니다.
+                    </p>
+                  )}
                 </section>
-
-                <aside className="min-h-0 overflow-y-auto rounded-lg border border-neutral-700 bg-neutral-800/40 p-3 scrollbar-neutral">
-                  <h3 className="text-sm font-semibold text-neutral-100">캐릭터 정보</h3>
-                  <div className="mt-2 space-y-1 text-xs text-neutral-300">
-                    <p>IL <span className={NUM_EMPHASIS_CLASS}>{formatNumber(detailData.profile.itemLevel)}</span></p>
-                    <p className="text-sky-300">CP <span className={NUM_BLUE_EMPHASIS_CLASS}>{formatNumber(detailData.profile.combatPower)}</span></p>
-                    {detailData.profile.regionName ? <p>지역: {detailData.profile.regionName}</p> : null}
-                    <p>소스: {detailData.source}</p>
-                  </div>
-
-                  <h3 className="mt-4 text-sm font-semibold text-neutral-100">주요 스탯</h3>
-                  <div className="mt-2 space-y-1 text-xs text-neutral-300">
-                    {detailData.statList.slice(0, 12).map((stat) => (
-                      <p key={`${stat.type}-${stat.name}`} className="truncate">
-                        {stat.name || stat.type}: <span className={NUM_EMPHASIS_CLASS}>{formatNumber(stat.value)}</span>
-                      </p>
-                    ))}
-                  </div>
-
-                  <div className="mt-4 flex gap-2">
-                    <a
-                      href={detailData.links.plaync}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="inline-flex h-8 items-center rounded-md border border-neutral-600 px-2 text-xs font-medium text-neutral-200 transition hover:bg-neutral-800"
-                    >
-                      PlayNC
-                    </a>
-                    <a
-                      href={detailData.links.aon2}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="inline-flex h-8 items-center rounded-md border border-neutral-600 px-2 text-xs font-medium text-neutral-200 transition hover:bg-neutral-800"
-                    >
-                      AON2
-                    </a>
-                  </div>
-                </aside>
               </div>
             ) : null}
           </div>
