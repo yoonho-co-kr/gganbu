@@ -2148,6 +2148,7 @@ export default function PartyBuilderPage({
                   const item = equipmentItemDetail.item as Record<string, unknown>;
                   const mainStats = Array.isArray(item.mainStats) ? (item.mainStats as Record<string, unknown>[]) : [];
                   const subStats = Array.isArray(item.subStats) ? (item.subStats as Record<string, unknown>[]) : [];
+                  const subSkills = Array.isArray(item.subSkills) ? (item.subSkills as Record<string, unknown>[]) : [];
                   const magicStoneStats = Array.isArray(item.magicStoneStat)
                     ? (item.magicStoneStat as Record<string, unknown>[])
                     : [];
@@ -2210,7 +2211,7 @@ export default function PartyBuilderPage({
                         </>
                       ) : null}
 
-                      {subStats.length > 0 ? (
+                      {subStats.length > 0 || subSkills.length > 0 ? (
                         <>
                           <h4 className="mt-4 text-sm font-semibold text-neutral-100">영혼각인/조율 옵션</h4>
                           <div className="mt-1 space-y-1 text-xs text-neutral-300">
@@ -2219,6 +2220,19 @@ export default function PartyBuilderPage({
                                 {String(stat.name ?? "-")}: <span className={NUM_EMPHASIS_CLASS}>{String(stat.value ?? "-")}</span>
                               </p>
                             ))}
+                            {subSkills.map((skill, index) => {
+                              const level = skill.level ?? skill.skillLevel ?? skill.value;
+                              return (
+                                <p key={`sub-skill-${index}`} className="truncate">
+                                  {String(skill.name ?? "-")}:{" "}
+                                  <span className={NUM_EMPHASIS_CLASS}>
+                                    {level !== undefined && level !== null && String(level).trim().length > 0
+                                      ? `+${String(level)}`
+                                      : "-"}
+                                  </span>
+                                </p>
+                              );
+                            })}
                           </div>
                         </>
                       ) : null}
