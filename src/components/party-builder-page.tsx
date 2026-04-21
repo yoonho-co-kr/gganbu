@@ -560,6 +560,48 @@ function CharacterCard({
   actionButton?: React.ReactNode;
   onOpenDetail?: (character: CharacterSummary) => void;
 }) {
+  const copyText = `${character.name}[${character.serverName}]`;
+  const handleCopyNameServer = async () => {
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(copyText);
+        return;
+      }
+    } catch {
+      // fallback below
+    }
+
+    try {
+      const textarea = document.createElement("textarea");
+      textarea.value = copyText;
+      textarea.setAttribute("readonly", "true");
+      textarea.style.position = "fixed";
+      textarea.style.opacity = "0";
+      document.body.appendChild(textarea);
+      textarea.select();
+      document.execCommand("copy");
+      document.body.removeChild(textarea);
+    } catch {
+      // noop
+    }
+  };
+
+  const copyButton = (
+    <button
+      type="button"
+      onPointerDown={(event) => event.stopPropagation()}
+      onClick={(event) => {
+        event.stopPropagation();
+        void handleCopyNameServer();
+      }}
+      aria-label={`${copyText} 복사`}
+      title={`${copyText} 복사`}
+      className="ml-1 inline-flex h-5 shrink-0 items-center justify-center rounded border border-neutral-600 bg-neutral-900/90 px-1.5 text-[10px] font-semibold text-neutral-200 transition hover:bg-neutral-800"
+    >
+      복사
+    </button>
+  );
+
   const profileButton = onOpenDetail ? (
     <button
       type="button"
@@ -596,6 +638,7 @@ function CharacterCard({
                 [{character.serverName}]
               </span>
             </p>
+            {copyButton}
             {profileButton}
           </div>
           <div
@@ -625,10 +668,11 @@ function CharacterCard({
         <div>
           <div className="flex items-center gap-2">
             <div className="min-w-0 flex-1">
-              <div className="flex items-center">
-                <p className="max-w-[8ch] truncate text-md font-bold text-neutral-100">{character.name}</p>
-                {profileButton}
-              </div>
+          <div className="flex items-center">
+            <p className="max-w-[8ch] truncate text-md font-bold text-neutral-100">{character.name}</p>
+            {copyButton}
+            {profileButton}
+          </div>
               <p className="truncate text-xs text-neutral-400">[{character.serverName}]</p>
             </div>
             <div
@@ -1872,7 +1916,7 @@ export default function PartyBuilderPage({
                           </span>
                         </p>
                       </div>
-                      <div className="mt-2 grid grid-cols-2 gap-2 md:grid-cols-1">
+                      <div className="mt-2 grid grid-cols-1 gap-2">
                         {teamOneSlots.map((character, index) => (
                           <PartySlot
                             key={`${party.id}-slot-${index}`}
@@ -1901,7 +1945,7 @@ export default function PartyBuilderPage({
                           </span>
                         </p>
                       </div>
-                      <div className="mt-2 grid grid-cols-2 gap-2 md:grid-cols-1">
+                      <div className="mt-2 grid grid-cols-1 gap-2">
                         {teamTwoSlots.map((character, index) => (
                           <PartySlot
                             key={`${party.id}-slot-${index + 4}`}
@@ -2738,7 +2782,6 @@ function WaitingDropZone({ children }: { children: React.ReactNode }) {
       window.removeEventListener("resize", onResize);
     };
   }, [children]);
-
   return (
     <div
       ref={setNodeRef}

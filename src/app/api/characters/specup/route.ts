@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 
 export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
+export const preferredRegion = "icn1";
 
 type UnknownRecord = Record<string, unknown>;
 
@@ -182,6 +184,10 @@ function parseNumericValue(value: unknown): number {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
+async function sleep(ms: number) {
+  await new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 function normalizeSkillName(value: string) {
   return value.toLowerCase().replace(/\s+/g, "");
 }
@@ -284,32 +290,236 @@ type A2ToolSearchPayload = {
   data?: UnknownRecord;
 };
 
-async function fetchA2ToolSearch(name: string, serverId: number, race: 1 | 2) {
-  const referer = `https://aion2tool.com/char/serverid=${serverId}/${encodeURIComponent(name)}`;
-  const payload = await fetchA2ToolJson<A2ToolSearchPayload>(
-    "https://aion2tool.com/api/character/search",
+type PlayNcSearchPayload = {
+  list?: UnknownRecord[];
+};
+
+function normalizeCharacterNameForMatch(value: string) {
+  return value.replace(/<[^>]+>/g, "").replace(/\s+/g, "").toLowerCase();
+}
+
+function isAccessorySlotName(slotPosName: string) {
+  return [
+    "Necklace",
+    "Earring1",
+    "Earring2",
+    "EarringL",
+    "EarringR",
+    "Ring1",
+    "Ring2",
+    "Bracelet1",
+    "Bracelet2",
+    "Belt",
+    "Amulet",
+  ].includes(slotPosName);
+}
+
+function pickCombatPowerFromPlayNcInfo(infoPayload: UnknownRecord) {
+  const profile = asRecord(infoPayload.profile) ?? {};
+  const stat = asRecord(infoPayload.stat) ?? {};
+  const statList = asArray(stat.statList);
+  const fromStatList = statList
+    .map((entry) => asRecord(entry))
+    .filter((entry): entry is UnknownRecord => entry !== null)
+    .find((entry) => {
+      const type = toText(entry.type).toLowerCase();
+      const name = toText(entry.name);
+      return /combat|battle/.test(type) || name.includes("전투력");
+    });
+
+  return toNumber(
+    fromStatList?.value ??
+      profile.combatPower ??
+      profile.maxCombatPower ??
+      profile.battlePower ??
+      profile.cp ??
+      stat.combatPower ??
+      stat.maxCombatPower,
+    0,
+  );
+}
+
+async function fetchPlayNcFallbackSpecupData(name: string, serverId: number) {
+  const params = new URLSearchParams({
+    keyword: name,
+    page: "0",
+    size: "20",
+    serverId: String(serverId),
+  });
+
+  const searchPayload = await fetchA2ToolJson<PlayNcSearchPayload>(
+    `https://aion2.plaync.com/ko-kr/api/search/aion2/search/v2/character?${params.toString()}`,
     {
-      method: "POST",
+      method: "GET",
       headers: {
         accept: "application/json, text/plain, */*",
-        "content-type": "application/json",
-        origin: "https://aion2tool.com",
-        referer,
+        "accept-language": "ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7",
         "user-agent":
           "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
       },
-      body: JSON.stringify({
-        race,
-        server_id: serverId,
-        keyword: name,
-      }),
     },
     12_000,
   );
 
-  if (payload.success && payload.data) {
-    return payload.data;
+  const candidates = asArray(searchPayload.list)
+    .map((entry) => asRecord(entry))
+    .filter((entry): entry is UnknownRecord => entry !== null)
+    .map((entry) => ({
+      characterId: toText(entry.characterId),
+      name: toText(entry.name),
+      serverId: toNumber(entry.serverId, 0),
+    }))
+    .filter((entry) => entry.characterId.length > 0 && entry.name.length > 0 && entry.serverId > 0);
+
+  const normalizedTargetName = normalizeCharacterNameForMatch(name);
+  const exact = candidates.find(
+    (entry) =>
+      entry.serverId === serverId && normalizeCharacterNameForMatch(entry.name) === normalizedTargetName,
+  );
+  const picked = exact ?? candidates.find((entry) => entry.serverId === serverId) ?? candidates[0];
+
+  if (!picked) {
+    return null;
   }
+
+  const detailParams = new URLSearchParams({
+    lang: "ko-kr",
+    characterId: picked.characterId,
+    serverId: String(picked.serverId),
+  });
+
+  const [infoPayload, equipmentPayload] = await Promise.all([
+    fetchA2ToolJson<UnknownRecord>(`https://aion2.plaync.com/api/character/info?${detailParams.toString()}`, {
+      method: "GET",
+      headers: {
+        accept: "application/json, text/plain, */*",
+        "user-agent":
+          "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+      },
+    }),
+    fetchA2ToolJson<UnknownRecord>(`https://aion2.plaync.com/api/character/equipment?${detailParams.toString()}`, {
+      method: "GET",
+      headers: {
+        accept: "application/json, text/plain, */*",
+        "user-agent":
+          "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+      },
+    }),
+  ]);
+
+  const profile = asRecord(infoPayload.profile) ?? {};
+  const stat = asRecord(infoPayload.stat) ?? {};
+  const equipmentRoot = asRecord(equipmentPayload.equipment) ?? {};
+  const skillRoot = asRecord(equipmentPayload.skill) ?? {};
+
+  const mergedItems = asArray(equipmentRoot.equipmentList)
+    .map((entry) => asRecord(entry))
+    .filter((entry): entry is UnknownRecord => entry !== null)
+    .map((entry) => {
+      const slotPosName = toText(entry.slotPosName);
+      const name = toText(entry.name);
+      return {
+        name,
+        icon_url: toText(entry.icon),
+        category_name: slotPosName || toText(entry.grade),
+        grade: toText(entry.grade),
+        enhance_level: toNumber(entry.enchantLevel, 0),
+        exceed_level: toNumber(entry.exceedLevel, 0),
+        soul_bind_rate: 0,
+        slot_pos_name: slotPosName,
+        is_accessory: isAccessorySlotName(slotPosName),
+        magic_stone_stat: [],
+      } satisfies UnknownRecord;
+    })
+    .filter((entry) => toText(entry.name).length > 0);
+
+  const equipment = mergedItems.filter((entry) => !Boolean(entry.is_accessory));
+  const accessories = mergedItems.filter((entry) => Boolean(entry.is_accessory));
+
+  const skills = asArray(skillRoot.skillList)
+    .map((entry) => asRecord(entry))
+    .filter((entry): entry is UnknownRecord => entry !== null)
+    .map((entry) => ({
+      name: toText(entry.name),
+      group: toText(entry.category),
+      category: toText(entry.category),
+      level_int: toNumber(entry.skillLevel, 0),
+    }))
+    .filter((entry) => entry.name.length > 0 && entry.level_int > 0);
+
+  const stigmas = skills
+    .filter((entry) => entry.category.toLowerCase() === "dp")
+    .map((entry) => ({
+      name: entry.name,
+      level_int: entry.level_int,
+    }));
+
+  const fallbackData: UnknownRecord = {
+    nickname: toText(profile.characterName) || picked.name || name,
+    race: toText(profile.raceName),
+    job: toText(profile.className),
+    nc_combat_power: pickCombatPowerFromPlayNcInfo(infoPayload),
+    stat: {
+      statList: asArray(stat.statList),
+    },
+    equipment,
+    accessories,
+    skills,
+    stigmas,
+  };
+
+  return fallbackData;
+}
+
+async function fetchA2ToolSearch(name: string, serverId: number, race: 1 | 2) {
+  const referer = `https://aion2tool.com/char/serverid=${serverId}/${encodeURIComponent(name)}`;
+  const retryDelaysMs = [0, 250, 800];
+  let lastErrorMessage = "";
+
+  for (let attempt = 0; attempt < retryDelaysMs.length; attempt += 1) {
+    if (retryDelaysMs[attempt] > 0) {
+      await sleep(retryDelaysMs[attempt]);
+    }
+
+    try {
+      const payload = await fetchA2ToolJson<A2ToolSearchPayload>(
+        "https://aion2tool.com/api/character/search",
+        {
+          method: "POST",
+          headers: {
+            accept: "application/json, text/plain, */*",
+            "accept-language": "ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7",
+            "content-type": "application/json",
+            origin: "https://aion2tool.com",
+            referer,
+            "user-agent":
+              "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+          },
+          body: JSON.stringify({
+            race,
+            server_id: serverId,
+            keyword: name,
+          }),
+        },
+        12_000,
+      );
+
+      if (payload.success && payload.data) {
+        return payload.data;
+      }
+
+      if (payload.error) {
+        lastErrorMessage = payload.error;
+      }
+    } catch (error) {
+      lastErrorMessage = error instanceof Error ? error.message : "unknown";
+    }
+  }
+
+  if (lastErrorMessage) {
+    throw new Error(lastErrorMessage);
+  }
+
   return null;
 }
 
@@ -366,6 +576,23 @@ function isBreakthroughExcluded(item: A2ToolItem) {
 function isArcanaItem(item: A2ToolItem) {
   const source = `${item.slotPosName} ${item.categoryName} ${item.name}`.toLowerCase();
   return source.includes("arcana") || source.includes("아르카나");
+}
+
+function getEnhanceTargetLevel(item: A2ToolItem) {
+  if (isArcanaItem(item)) {
+    return 5;
+  }
+
+  const source = `${item.slotPosName} ${item.categoryName} ${item.name}`.toLowerCase();
+  const hasRune = source.includes("rune") || source.includes("룬") || source.includes("符文");
+  const hasBelt = source.includes("belt") || source.includes("허리띠") || source.includes("腰帶");
+  const hasAmulet = source.includes("amulet") || source.includes("아뮬렛") || source.includes("護身符");
+
+  if (hasRune || hasBelt || hasAmulet) {
+    return 10;
+  }
+
+  return 15;
 }
 
 function getBreakthroughCpCategory(item: A2ToolItem) {
@@ -603,6 +830,8 @@ export async function GET(request: NextRequest) {
 
   let resolvedData: UnknownRecord | null = null;
   let resolvedRace: 1 | 2 | null = null;
+  let source = "a2tool-api";
+  let raceQueryFailedCount = 0;
   for (const race of raceCandidates) {
     try {
       const result = await fetchA2ToolSearch(name, serverId, race);
@@ -612,17 +841,35 @@ export async function GET(request: NextRequest) {
         break;
       }
     } catch (error) {
+      raceQueryFailedCount += 1;
       warnings.push(`race ${race} 조회 실패: ${error instanceof Error ? error.message : "unknown"}`);
     }
   }
 
   if (!resolvedData || !resolvedRace) {
+    try {
+      const fallback = await fetchPlayNcFallbackSpecupData(name, serverId);
+      if (fallback) {
+        resolvedData = fallback;
+        resolvedRace = inferRaceCode(toText(fallback.race)) ?? raceCode ?? 1;
+        source = "plaync-fallback";
+        warnings.push("a2tool unavailable: plaync fallback used");
+      }
+    } catch (error) {
+      warnings.push(`plaync fallback 실패: ${error instanceof Error ? error.message : "unknown"}`);
+    }
+  }
+
+  if (!resolvedData || !resolvedRace) {
+    const allRaceFailed = raceQueryFailedCount >= raceCandidates.length;
     return NextResponse.json(
       {
-        error: "A2Tool에서 캐릭터 스펙업 데이터를 찾지 못했습니다.",
+        error: allRaceFailed
+          ? "외부 스펙업 API(A2Tool) 조회가 일시적으로 실패했습니다. 잠시 후 다시 시도해 주세요."
+          : "A2Tool에서 캐릭터 스펙업 데이터를 찾지 못했습니다.",
         warnings,
       },
-      { status: 404 },
+      { status: allRaceFailed ? 502 : 404 },
     );
   }
 
@@ -817,7 +1064,7 @@ export async function GET(request: NextRequest) {
   const lowEnchantItems = allItems
     .map((item) => ({
       item,
-      targetEnhance: isArcanaItem(item) ? 5 : 15,
+      targetEnhance: getEnhanceTargetLevel(item),
     }))
     .filter((entry) => entry.item.enhanceLevel >= 0 && entry.item.enhanceLevel < entry.targetEnhance)
     .sort((a, b) => {
@@ -830,13 +1077,14 @@ export async function GET(request: NextRequest) {
   if (lowEnchantItems.length > 0) {
     const minEnhance = lowEnchantItems.reduce((min, entry) => Math.min(min, entry.item.enhanceLevel), Number.POSITIVE_INFINITY);
     const arcanaLowCount = lowEnchantItems.filter((entry) => isArcanaItem(entry.item)).length;
+    const tenLowCount = lowEnchantItems.filter((entry) => entry.targetEnhance === 10).length;
     const normalLowCount = lowEnchantItems.length - arcanaLowCount;
     otherRecommendations.push({
       key: "enchant",
       title: "장비 강화",
-      reason: `일반 +15 미만 ${normalLowCount}개, 아르카나 +5 미만 ${arcanaLowCount}개`,
+      reason: `일반 +15 미만 ${normalLowCount}개, 룬/허리띠/아뮬렛 +10 미만 ${tenLowCount}개, 아르카나 +5 미만 ${arcanaLowCount}개`,
       currentValue: `최저 +${Number.isFinite(minEnhance) ? minEnhance : 0}`,
-      targetValue: "일반 +15 / 아르카나 +5 권장",
+      targetValue: "일반 +15 / 룬·허리띠·아뮬렛 +10 / 아르카나 +5 권장",
       priority: lowEnchantItems.some((entry) => (!isArcanaItem(entry.item) && entry.item.enhanceLevel <= 10) || (isArcanaItem(entry.item) && entry.item.enhanceLevel <= 2))
         ? "high"
         : "medium",
@@ -1002,7 +1250,7 @@ export async function GET(request: NextRequest) {
   }
 
   return NextResponse.json({
-    source: "a2tool-api",
+    source,
     character: {
       nickname: toText(resolvedData.nickname) || name,
       serverId,
