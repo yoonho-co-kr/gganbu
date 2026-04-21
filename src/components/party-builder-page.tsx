@@ -560,7 +560,9 @@ function CharacterCard({
   actionButton?: React.ReactNode;
   onOpenDetail?: (character: CharacterSummary) => void;
 }) {
-  const copyText = `${character.name}[${character.serverName}]`;
+  const normalizedServerName = character.serverName.replace(/\s+/g, "");
+  const shortServerName = normalizedServerName.slice(0, 2) || character.serverName.slice(0, 2);
+  const copyText = `${character.name}[${shortServerName}]`;
   const handleCopyNameServer = async () => {
     try {
       if (navigator.clipboard?.writeText) {
@@ -598,7 +600,15 @@ function CharacterCard({
       title={`${copyText} 복사`}
       className="ml-1 inline-flex h-5 shrink-0 items-center justify-center rounded border border-neutral-600 bg-neutral-900/90 px-1.5 text-[10px] font-semibold text-neutral-200 transition hover:bg-neutral-800"
     >
-      복사
+      <svg className="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true">
+        <rect x="9" y="9" width="10" height="10" rx="2" strokeWidth="1.8" />
+        <path
+          d="M7 15H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h7a2 2 0 0 1 2 2v1"
+          strokeWidth="1.8"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        />
+      </svg>
     </button>
   );
 
@@ -606,10 +616,13 @@ function CharacterCard({
     <button
       type="button"
       onPointerDown={(event) => event.stopPropagation()}
-      onClick={() => onOpenDetail(character)}
+      onClick={(event) => {
+        event.stopPropagation();
+        onOpenDetail(character);
+      }}
       aria-label={`${character.name} 상세정보`}
       title="상세정보"
-      className="ml-1 inline-flex h-5 shrink-0 items-center justify-center rounded border border-neutral-600 bg-neutral-900/90 px-1.5 text-[10px] font-semibold text-neutral-200 transition hover:bg-neutral-800"
+      className="inline-flex h-5 shrink-0 items-center justify-center rounded border border-neutral-600 bg-neutral-900/90 px-1.5 text-[10px] font-semibold text-neutral-200 transition hover:bg-neutral-800"
     >
       {"상세"}
     </button>
@@ -639,7 +652,6 @@ function CharacterCard({
               </span>
             </p>
             {copyButton}
-            {profileButton}
           </div>
           <div
             className={`justify-self-end ${
@@ -648,13 +660,16 @@ function CharacterCard({
           >
             {actionButton}
           </div>
-          <div className="flex flex-col leading-tight">
-            <p className={`${dense ? "text-[10px]" : "text-[11px]"} text-sky-300`}>
-              전투력 <span className={NUM_BLUE_EMPHASIS_CLASS}>{formatNumber(character.combatPower)}</span>
-            </p>
-            <p className={`${dense ? "text-[10px]" : "text-[11px]"} text-neutral-300`}>
-              아이템레벨 <span className={NUM_EMPHASIS_CLASS}>{formatNumber(character.itemLevel)}</span>
-            </p>
+          <div className="flex items-center justify-between gap-2">
+            <div className="min-w-0 flex flex-col leading-tight">
+              <p className={`${dense ? "text-[10px]" : "text-[11px]"} text-sky-300`}>
+                전투력 <span className={NUM_BLUE_EMPHASIS_CLASS}>{formatNumber(character.combatPower)}</span>
+              </p>
+              <p className={`${dense ? "text-[10px]" : "text-[11px]"} text-neutral-300`}>
+                아이템레벨 <span className={NUM_EMPHASIS_CLASS}>{formatNumber(character.itemLevel)}</span>
+              </p>
+            </div>
+            {profileButton}
           </div>
           <div
             className={`${dense ? "w-12 h-5 text-[10px]" : "w-12 h-6 text-[11px]"} justify-center inline-flex shrink-0 items-center rounded-lg border px-2 font-semibold ${getClassBadgeToneClass(
@@ -671,7 +686,6 @@ function CharacterCard({
           <div className="flex items-center">
             <p className="max-w-[8ch] truncate text-md font-bold text-neutral-100">{character.name}</p>
             {copyButton}
-            {profileButton}
           </div>
               <p className="truncate text-xs text-neutral-400">[{character.serverName}]</p>
             </div>
@@ -684,13 +698,16 @@ function CharacterCard({
             </div>
           </div>
 
-          <div className="mt-2 grid grid-cols-2 gap-2 text-[11px] text-neutral-400">
-            <div className="rounded-md border border-neutral-700 bg-neutral-800 px-2 py-1">
-              IL <span className={NUM_EMPHASIS_CLASS}>{formatNumber(character.itemLevel)}</span>
+          <div className="mt-2 flex items-center gap-2">
+            <div className="grid flex-1 grid-cols-2 gap-2 text-[11px] text-neutral-400">
+              <div className="rounded-md border border-neutral-700 bg-neutral-800 px-2 py-1">
+                IL <span className={NUM_EMPHASIS_CLASS}>{formatNumber(character.itemLevel)}</span>
+              </div>
+              <div className="rounded-md border border-sky-700/50 bg-sky-900/20 px-2 py-1 text-sky-300">
+                CP <span className={NUM_BLUE_EMPHASIS_CLASS}>{formatNumber(character.combatPower)}</span>
+              </div>
             </div>
-            <div className="rounded-md border border-sky-700/50 bg-sky-900/20 px-2 py-1 text-sky-300">
-              CP <span className={NUM_BLUE_EMPHASIS_CLASS}>{formatNumber(character.combatPower)}</span>
-            </div>
+            {profileButton}
           </div>
         </div>
       )}
