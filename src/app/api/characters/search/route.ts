@@ -4,6 +4,8 @@ import { NextRequest, NextResponse } from "next/server";
 import type { CharacterSource, CharacterSummary } from "@/types/character";
 
 export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
+export const preferredRegion = "icn1";
 
 type UnknownRecord = Record<string, unknown>;
 type ClassMeta = {
@@ -52,6 +54,31 @@ function sanitizeName(value: unknown): string {
   return value.replace(/<[^>]+>/g, "").trim();
 }
 
+function normalizeCharacterId(value: unknown): string {
+  if (typeof value !== "string") {
+    return "";
+  }
+
+  let normalized = value.trim();
+  if (!normalized) {
+    return "";
+  }
+
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    try {
+      const decoded = decodeURIComponent(normalized);
+      if (!decoded || decoded === normalized) {
+        break;
+      }
+      normalized = decoded;
+    } catch {
+      break;
+    }
+  }
+
+  return normalized.trim();
+}
+
 function toNumber(value: unknown, fallback = 0): number {
   if (typeof value === "number" && Number.isFinite(value)) {
     return value;
@@ -81,6 +108,10 @@ function asRecord(value: unknown): UnknownRecord | undefined {
     return undefined;
   }
   return value as UnknownRecord;
+}
+
+function asArray(value: unknown): unknown[] {
+  return Array.isArray(value) ? value : [];
 }
 
 function pickPositiveNumberFromValues(values: unknown[], fallback = 0): number {
@@ -172,6 +203,7 @@ async function fetchJson<T>(url: string, init?: RequestInit, timeoutMs = 8_000):
       cache: "no-store",
       headers: {
         "accept": "application/json, text/plain, */*",
+        "accept-language": "ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7",
         "user-agent":
           "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
         ...(init?.headers ?? {}),
@@ -241,7 +273,7 @@ function normalizeAon2Payload(payload: unknown): CharacterSummary[] {
       const record = item as UnknownRecord;
       const stats = asRecord(record.stats) ?? asRecord(record.stat) ?? {};
 
-      const characterId = String(record.characterId ?? record.id ?? "").trim();
+      const characterId = normalizeCharacterId(record.characterId ?? record.id ?? "");
       const rawName = sanitizeName(record.name ?? record.characterName);
       const serverId = toNumber(record.serverId);
       const serverName = String(record.serverName ?? record.server ?? "").trim();
@@ -339,7 +371,7 @@ async function searchWithAon2Api(name: string, serverId?: number, size = DEFAULT
 }
 
 function mapPlayNcSearchItem(item: UnknownRecord, classMap: Map<number, ClassMeta>): CharacterSummary | null {
-  const characterId = String(item.characterId ?? "").trim();
+  const characterId = normalizeCharacterId(item.characterId);
   const serverId = toNumber(item.serverId);
   const serverName = String(item.serverName ?? "").trim();
   const name = sanitizeName(item.name);
@@ -386,22 +418,49 @@ function mapPlayNcSearchItem(item: UnknownRecord, classMap: Map<number, ClassMet
 }
 
 async function fetchPlayNcCharacterDetail(characterId: string, serverId: number) {
-  let normalizedCharacterId = characterId;
-  try {
-    normalizedCharacterId = decodeURIComponent(characterId);
-  } catch {
-    normalizedCharacterId = characterId;
+  const normalizedCharacterId = normalizeCharacterId(characterId);
+  const referer = `https://aion2.plaync.com/ko-kr/characters/${serverId}/${encodeURIComponent(normalizedCharacterId)}`;
+  const languages = ["ko-kr", "ko"];
+  let detail: UnknownRecord | null = null;
+
+  for (const lang of languages) {
+    try {
+      const params = new URLSearchParams({
+        lang,
+        characterId: normalizedCharacterId,
+        serverId: String(serverId),
+      });
+
+      const payload = await fetchJson<UnknownRecord>(
+        `https://aion2.plaync.com/api/character/info?${params.toString()}`,
+        {
+          headers: {
+            origin: "https://aion2.plaync.com",
+            referer,
+          },
+        },
+      );
+
+      const profile = asRecord(payload.profile) ?? {};
+      const statRoot = asRecord(payload.stat) ?? {};
+      const statList = asArray(statRoot.statList);
+      const hasData =
+        toOptionalString(profile.characterName) !== undefined ||
+        toNumber(profile.combatPower, 0) > 0 ||
+        statList.length > 0;
+
+      detail = payload;
+      if (hasData) {
+        break;
+      }
+    } catch {
+      // Keep trying the next language variant.
+    }
   }
 
-  const params = new URLSearchParams({
-    lang: "ko-kr",
-    characterId: normalizedCharacterId,
-    serverId: String(serverId),
-  });
-
-  const detail = await fetchJson<UnknownRecord>(
-    `https://aion2.plaync.com/api/character/info?${params.toString()}`,
-  );
+  if (!detail) {
+    throw new Error("plaync info empty");
+  }
 
   const statList =
     ((detail.stat as UnknownRecord | undefined)?.statList as UnknownRecord[] | undefined) ?? [];
@@ -634,8 +693,9 @@ async function searchWithPlayNcScrape(name: string, serverId?: number): Promise<
   for (const selector of selectors) {
     $(selector).each((_, element) => {
       const el = $(element);
-      const characterId =
-        (el.attr("data-character-id") || el.find("[data-character-id]").attr("data-character-id") || "").trim();
+      const characterId = normalizeCharacterId(
+        el.attr("data-character-id") || el.find("[data-character-id]").attr("data-character-id") || "",
+      );
 
       const name = sanitizeName(
         el.attr("data-character-name") ||

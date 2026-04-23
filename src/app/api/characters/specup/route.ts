@@ -303,14 +303,24 @@ function sanitizeCharacterName(value: string) {
 }
 
 function decodeCharacterId(value: string) {
-  if (!value) {
-    return value;
+  let normalized = value.trim();
+  if (!normalized) {
+    return normalized;
   }
-  try {
-    return decodeURIComponent(value);
-  } catch {
-    return value;
+
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    try {
+      const decoded = decodeURIComponent(normalized);
+      if (!decoded || decoded === normalized) {
+        break;
+      }
+      normalized = decoded;
+    } catch {
+      break;
+    }
   }
+
+  return normalized.trim();
 }
 
 function raceIdToName(raceId: number) {
@@ -358,6 +368,83 @@ function pickCombatPowerFromPlayNcInfo(infoPayload: UnknownRecord) {
       stat.maxCombatPower,
     0,
   );
+}
+
+function hasMeaningfulPlayNcDetailPayload(infoPayload: UnknownRecord, equipmentPayload: UnknownRecord) {
+  const profile = asRecord(infoPayload.profile) ?? {};
+  const stat = asRecord(infoPayload.stat) ?? {};
+  const statList = asArray(stat.statList);
+  const equipment = asRecord(equipmentPayload.equipment) ?? {};
+  const skill = asRecord(equipmentPayload.skill) ?? {};
+  const equipmentList = asArray(equipment.equipmentList);
+  const skillList = asArray(skill.skillList);
+
+  return Boolean(
+    toText(profile.characterName) ||
+      toNumber(profile.combatPower, 0) > 0 ||
+      statList.length > 0 ||
+      equipmentList.length > 0 ||
+      skillList.length > 0,
+  );
+}
+
+async function fetchPlayNcInfoAndEquipment(characterId: string, serverId: number) {
+  const normalizedCharacterId = decodeCharacterId(characterId);
+  const referer = `https://aion2.plaync.com/ko-kr/characters/${serverId}/${encodeURIComponent(normalizedCharacterId)}`;
+  const languages = ["ko-kr", "ko"];
+  let fallbackPayload: { infoPayload: UnknownRecord; equipmentPayload: UnknownRecord } | null = null;
+  let lastError: string | null = null;
+
+  for (const lang of languages) {
+    const detailParams = new URLSearchParams({
+      lang,
+      characterId: normalizedCharacterId,
+      serverId: String(serverId),
+    });
+
+    try {
+      const [infoPayload, equipmentPayload] = await Promise.all([
+        fetchA2ToolJson<UnknownRecord>(`https://aion2.plaync.com/api/character/info?${detailParams.toString()}`, {
+          method: "GET",
+          headers: {
+            accept: "application/json, text/plain, */*",
+            "accept-language": "ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7",
+            origin: "https://aion2.plaync.com",
+            referer,
+            "user-agent":
+              "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+          },
+        }),
+        fetchA2ToolJson<UnknownRecord>(
+          `https://aion2.plaync.com/api/character/equipment?${detailParams.toString()}`,
+          {
+            method: "GET",
+            headers: {
+              accept: "application/json, text/plain, */*",
+              "accept-language": "ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7",
+              origin: "https://aion2.plaync.com",
+              referer,
+              "user-agent":
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+            },
+          },
+        ),
+      ]);
+
+      fallbackPayload = { infoPayload, equipmentPayload };
+      if (hasMeaningfulPlayNcDetailPayload(infoPayload, equipmentPayload)) {
+        return fallbackPayload;
+      }
+    } catch (error) {
+      lastError = error instanceof Error ? error.message : "unknown";
+    }
+  }
+
+  if (fallbackPayload) {
+    return fallbackPayload;
+  }
+
+  throw new Error(lastError ?? "plaync detail fetch failed");
 }
 
 async function fetchPlayNcFallbackSpecupData(name: string, serverId: number) {
@@ -413,30 +500,10 @@ async function fetchPlayNcFallbackSpecupData(name: string, serverId: number) {
     return null;
   }
 
-  const detailParams = new URLSearchParams({
-    lang: "ko-kr",
-    characterId: picked.characterId,
-    serverId: String(picked.serverId),
-  });
-
-  const [infoPayload, equipmentPayload] = await Promise.all([
-    fetchA2ToolJson<UnknownRecord>(`https://aion2.plaync.com/api/character/info?${detailParams.toString()}`, {
-      method: "GET",
-      headers: {
-        accept: "application/json, text/plain, */*",
-        "user-agent":
-          "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
-      },
-    }),
-    fetchA2ToolJson<UnknownRecord>(`https://aion2.plaync.com/api/character/equipment?${detailParams.toString()}`, {
-      method: "GET",
-      headers: {
-        accept: "application/json, text/plain, */*",
-        "user-agent":
-          "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
-      },
-    }),
-  ]);
+  const { infoPayload, equipmentPayload } = await fetchPlayNcInfoAndEquipment(
+    picked.characterId,
+    picked.serverId,
+  );
 
   const profile = asRecord(infoPayload.profile) ?? {};
   const stat = asRecord(infoPayload.stat) ?? {};
