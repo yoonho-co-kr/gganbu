@@ -1354,9 +1354,11 @@ export default function PartyBuilderPage({
       const refreshedEntries = await Promise.all(
         targets.map(async (target) => {
           try {
+            const cacheBust = Date.now().toString();
             const detailParams = new URLSearchParams({
               characterId: target.characterId,
               serverId: String(target.serverId),
+              t: cacheBust,
             });
 
             const detailResponse = await fetch(`/api/characters/detail?${detailParams.toString()}`, {
@@ -1396,6 +1398,7 @@ export default function PartyBuilderPage({
               name: target.name,
               serverId: String(target.serverId),
               size: "20",
+              t: cacheBust,
             });
 
             const searchResponse = await fetch(`/api/characters/search?${searchParams.toString()}`, {
