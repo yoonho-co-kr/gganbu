@@ -598,7 +598,7 @@ function CharacterCard({
       }}
       aria-label={`${copyText} 복사`}
       title={`${copyText} 복사`}
-      className="ml-1 inline-flex h-5 shrink-0 items-center justify-center rounded border border-neutral-600 bg-neutral-900/90 px-1.5 text-[10px] font-semibold text-neutral-200 transition hover:bg-neutral-800"
+      className="ml-1 inline-flex h-5 shrink-0 items-center justify-center rounded  px-1.5 text-[10px] font-semibold text-neutral-200 transition hover:bg-neutral-800 cursor-pointer"
     >
       <svg className="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true">
         <rect x="9" y="9" width="10" height="10" rx="2" strokeWidth="1.8" />
@@ -1353,22 +1353,60 @@ export default function PartyBuilderPage({
     try {
       const refreshedEntries = await Promise.all(
         targets.map(async (target) => {
-          const params = new URLSearchParams({
-            name: target.name,
-            serverId: String(target.serverId),
-            size: "20",
-          });
-
           try {
-            const response = await fetch(`/api/characters/search?${params.toString()}`, {
+            const detailParams = new URLSearchParams({
+              characterId: target.characterId,
+              serverId: String(target.serverId),
+            });
+
+            const detailResponse = await fetch(`/api/characters/detail?${detailParams.toString()}`, {
               cache: "no-store",
             });
-            if (!response.ok) {
+
+            if (detailResponse.ok) {
+              const detailPayload = (await detailResponse.json()) as {
+                profile?: {
+                  className?: string;
+                  itemLevel?: number;
+                  combatPower?: number;
+                };
+              };
+
+              const profile = detailPayload.profile;
+              if (profile) {
+                const mergedFromDetail: CharacterSummary = {
+                  ...target,
+                  className: profile.className || target.className,
+                  itemLevel: typeof profile.itemLevel === "number" && profile.itemLevel > 0 ? profile.itemLevel : target.itemLevel,
+                  combatPower:
+                    typeof profile.combatPower === "number" && profile.combatPower > 0
+                      ? profile.combatPower
+                      : target.combatPower,
+                  source: "plaync-api",
+                };
+
+                return {
+                  key: characterKey(target),
+                  character: mergedFromDetail,
+                };
+              }
+            }
+
+            const searchParams = new URLSearchParams({
+              name: target.name,
+              serverId: String(target.serverId),
+              size: "20",
+            });
+
+            const searchResponse = await fetch(`/api/characters/search?${searchParams.toString()}`, {
+              cache: "no-store",
+            });
+            if (!searchResponse.ok) {
               return null;
             }
 
-            const payload = (await response.json()) as { items?: CharacterSummary[] };
-            const items = Array.isArray(payload.items) ? payload.items : [];
+            const searchPayload = (await searchResponse.json()) as { items?: CharacterSummary[] };
+            const items = Array.isArray(searchPayload.items) ? searchPayload.items : [];
             if (items.length === 0) {
               return null;
             }
@@ -1666,7 +1704,7 @@ export default function PartyBuilderPage({
 
   return (
     <div className="md:h-screen overflow-hidden bg-neutral-950 tabular-nums select-none">
-      <main className="mx-auto h-full w-full max-w-[1440px] overflow-hidden p-4 md:p-6">
+      <main className="mx-auto h-full w-full max-w-[1920px] overflow-hidden p-4 md:p-6">
         <DndContext
           sensors={sensors}
           onDragStart={handleDragStart}
@@ -1860,7 +1898,7 @@ export default function PartyBuilderPage({
           </section>
             </aside>
 
-          <section className="min-h-0 overflow-y-auto pr-1 space-y-3 scrollbar-neutral">
+          <section className="min-h-0 overflow-y-auto space-y-3 scrollbar-neutral">
             <h2 className="text-base font-medium text-neutral-100">파티</h2>
             <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
             {parties.map((party) => {
