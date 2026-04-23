@@ -49,6 +49,10 @@ type A2ToolSkillStatsPayload = {
   };
 };
 
+type PlayNcSearchPayload = {
+  list?: UnknownRecord[];
+};
+
 function toNumber(value: unknown, fallback = 0): number {
   if (typeof value === "number" && Number.isFinite(value)) {
     return value;
@@ -83,6 +87,10 @@ function asArray(value: unknown): unknown[] {
 
 function normalizeSkillName(value: string): string {
   return value.toLowerCase().replace(/[\s·ㆍ\-_]/g, "");
+}
+
+function normalizeCharacterNameForMatch(value: string): string {
+  return value.replace(/<[^>]+>/g, "").replace(/\s+/g, "").toLowerCase();
 }
 
 async function fetchJson<T>(url: string, timeoutMs = 8000, headers?: HeadersInit): Promise<T> {
@@ -154,6 +162,46 @@ async function fetchA2ToolSkillStats(jobName: string): Promise<RankerSkillStatsB
     passive: mapRankerSkillList(payload.data.passive),
     stigma: mapRankerSkillList(payload.data.stigma),
   };
+}
+
+async function resolveCharacterIdByName(name: string, serverId: number): Promise<string | null> {
+  if (!name.trim()) {
+    return null;
+  }
+
+  const params = new URLSearchParams({
+    keyword: name,
+    page: "0",
+    size: "20",
+    serverId: String(serverId),
+  });
+
+  const payload = await fetchJson<PlayNcSearchPayload>(
+    `https://aion2.plaync.com/ko-kr/api/search/aion2/search/v2/character?${params.toString()}`,
+    10_000,
+  );
+
+  const list = asArray(payload.list)
+    .map((entry) => asRecord(entry))
+    .filter((entry): entry is UnknownRecord => Boolean(entry))
+    .map((entry) => ({
+      characterId: String(entry.characterId ?? "").trim(),
+      serverId: toNumber(entry.serverId, 0),
+      name: String(entry.name ?? "").trim(),
+    }))
+    .filter((entry) => entry.characterId.length > 0 && entry.serverId > 0);
+
+  if (list.length === 0) {
+    return null;
+  }
+
+  const normalizedTargetName = normalizeCharacterNameForMatch(name);
+  const exact = list.find(
+    (entry) =>
+      entry.serverId === serverId &&
+      normalizeCharacterNameForMatch(entry.name) === normalizedTargetName,
+  );
+  return exact?.characterId ?? list.find((entry) => entry.serverId === serverId)?.characterId ?? list[0]?.characterId ?? null;
 }
 
 function mapEquipmentList(list: unknown): EquipmentItem[] {
@@ -278,6 +326,7 @@ function applySkillTargets(
 export async function GET(request: NextRequest) {
   const characterIdRaw = request.nextUrl.searchParams.get("characterId")?.trim() ?? "";
   const serverIdRaw = request.nextUrl.searchParams.get("serverId")?.trim() ?? "";
+  const characterNameRaw = request.nextUrl.searchParams.get("name")?.trim() ?? "";
 
   if (!characterIdRaw || !serverIdRaw) {
     return NextResponse.json({ error: "characterId, serverId 파라미터가 필요합니다." }, { status: 400 });
@@ -295,20 +344,57 @@ export async function GET(request: NextRequest) {
     characterId = characterIdRaw;
   }
 
-  const params = new URLSearchParams({
-    lang: "ko-kr",
-    characterId,
-    serverId: String(serverId),
-  });
-
-  const infoUrl = `https://aion2.plaync.com/api/character/info?${params.toString()}`;
-  const equipmentUrl = `https://aion2.plaync.com/api/character/equipment?${params.toString()}`;
-
   try {
-    const [infoPayload, equipmentPayload] = await Promise.all([
-      fetchJson<UnknownRecord>(infoUrl),
-      fetchJson<UnknownRecord>(equipmentUrl),
-    ]);
+    const warnings: string[] = [];
+    const fetchDetailPayload = async (targetCharacterId: string) => {
+      const params = new URLSearchParams({
+        lang: "ko-kr",
+        characterId: targetCharacterId,
+        serverId: String(serverId),
+      });
+
+      const infoUrl = `https://aion2.plaync.com/api/character/info?${params.toString()}`;
+      const equipmentUrl = `https://aion2.plaync.com/api/character/equipment?${params.toString()}`;
+
+      const [infoPayload, equipmentPayload] = await Promise.all([
+        fetchJson<UnknownRecord>(infoUrl),
+        fetchJson<UnknownRecord>(equipmentUrl),
+      ]);
+      return { infoPayload, equipmentPayload };
+    };
+
+    let resolvedCharacterId = characterId;
+    let detailPayload: { infoPayload: UnknownRecord; equipmentPayload: UnknownRecord };
+
+    try {
+      detailPayload = await fetchDetailPayload(resolvedCharacterId);
+    } catch (firstError) {
+      if (!characterNameRaw) {
+        throw firstError;
+      }
+
+      const resolvedByName = await resolveCharacterIdByName(characterNameRaw, serverId);
+      if (!resolvedByName) {
+        throw firstError;
+      }
+
+      let normalizedResolvedByName = resolvedByName;
+      try {
+        normalizedResolvedByName = decodeURIComponent(resolvedByName);
+      } catch {
+        normalizedResolvedByName = resolvedByName;
+      }
+
+      if (normalizedResolvedByName === resolvedCharacterId) {
+        throw firstError;
+      }
+
+      detailPayload = await fetchDetailPayload(normalizedResolvedByName);
+      resolvedCharacterId = normalizedResolvedByName;
+      warnings.push("characterId fallback by name");
+    }
+
+    const { infoPayload, equipmentPayload } = detailPayload;
 
     const profile = asRecord(infoPayload.profile) ?? {};
     const stat = asRecord(infoPayload.stat) ?? {};
@@ -351,7 +437,7 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({
       source: "plaync-api",
       profile: {
-        characterId: toOptionalString(profile.characterId) ?? characterIdRaw,
+        characterId: toOptionalString(profile.characterId) ?? resolvedCharacterId,
         characterName: toOptionalString(profile.characterName) ?? "",
         serverId: toNumber(profile.serverId, serverId),
         serverName: toOptionalString(profile.serverName) ?? "",
@@ -378,9 +464,10 @@ export async function GET(request: NextRequest) {
         skinList: mapEquipmentList(equipmentRoot.skinList),
       },
       links: {
-        plaync: `https://aion2.plaync.com/ko-kr/characters/character-info?serverId=${serverId}&characterId=${encodeURIComponent(characterId)}`,
-        aon2: `https://aon2.info/character/${serverId}/${encodeURIComponent(characterId)}`,
+        plaync: `https://aion2.plaync.com/ko-kr/characters/character-info?serverId=${serverId}&characterId=${encodeURIComponent(resolvedCharacterId)}`,
+        aon2: `https://aon2.info/character/${serverId}/${encodeURIComponent(resolvedCharacterId)}`,
       },
+      warnings,
     });
   } catch (error) {
     return NextResponse.json(

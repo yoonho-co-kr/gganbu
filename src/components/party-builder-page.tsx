@@ -1161,6 +1161,7 @@ export default function PartyBuilderPage({
       const params = new URLSearchParams({
         characterId: character.characterId,
         serverId: String(character.serverId),
+        name: character.name,
       });
 
       const response = await fetch(`/api/characters/detail?${params.toString()}`, {
@@ -1358,6 +1359,7 @@ export default function PartyBuilderPage({
             const detailParams = new URLSearchParams({
               characterId: target.characterId,
               serverId: String(target.serverId),
+              name: target.name,
               t: cacheBust,
             });
 
