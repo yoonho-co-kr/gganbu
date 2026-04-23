@@ -5,6 +5,9 @@ export const runtime = "nodejs";
 export const preferredRegion = "icn1";
 
 type UnknownRecord = Record<string, unknown>;
+type ClassMeta = {
+  className: string;
+};
 
 type EquipmentItem = {
   id: number;
@@ -64,7 +67,16 @@ type PlayNcSearchSummary = {
   raceName: string;
   itemLevel: number;
   combatPower: number;
+  profileImage: string | null;
 };
+
+const CLASS_MAP_TTL_MS = 10 * 60 * 1000;
+let classMapCache:
+  | {
+      fetchedAt: number;
+      byPcId: Map<number, ClassMeta>;
+    }
+  | null = null;
 
 function toNumber(value: unknown, fallback = 0): number {
   if (typeof value === "number" && Number.isFinite(value)) {
@@ -85,6 +97,10 @@ function toOptionalString(value: unknown): string | undefined {
   }
   const trimmed = value.trim();
   return trimmed ? trimmed : undefined;
+}
+
+async function sleep(ms: number) {
+  await new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function asRecord(value: unknown): UnknownRecord | undefined {
@@ -176,6 +192,35 @@ async function fetchJson<T>(url: string, timeoutMs = 8000, headers?: HeadersInit
   } finally {
     clearTimeout(timeout);
   }
+}
+
+async function getPlayNcClassMap(): Promise<Map<number, ClassMeta>> {
+  if (classMapCache && Date.now() - classMapCache.fetchedAt < CLASS_MAP_TTL_MS) {
+    return classMapCache.byPcId;
+  }
+
+  const payload = await fetchJson<{ pcDataList?: UnknownRecord[] }>(
+    "https://aion2.plaync.com/api/gameinfo/pcdata?lang=ko-kr",
+    10_000,
+  );
+  const list = Array.isArray(payload.pcDataList) ? payload.pcDataList : [];
+  const byPcId = new Map<number, ClassMeta>();
+
+  for (const item of list) {
+    const classId = toNumber(item.id);
+    const className = toOptionalString(item.classText) ?? toOptionalString(item.className);
+    if (!classId || !className) {
+      continue;
+    }
+    byPcId.set(classId, { className });
+  }
+
+  classMapCache = {
+    fetchedAt: Date.now(),
+    byPcId,
+  };
+
+  return byPcId;
 }
 
 function mapRankerSkillList(list: unknown): RankerSkillStat[] {
@@ -280,15 +325,25 @@ async function fetchPlayNcSearchSummaryByName(name: string, serverId: number): P
     10_000,
   );
 
+  const classMap = await getPlayNcClassMap().catch(() => new Map<number, ClassMeta>());
   const list = asArray(payload.list)
     .map((entry) => asRecord(entry))
     .filter((entry): entry is UnknownRecord => Boolean(entry))
-    .map((entry) => ({
+    .map((entry) => {
+      const pcId = toNumber(entry.pcId, 0);
+      const classNameFromMap = pcId > 0 ? classMap.get(pcId)?.className : undefined;
+      const profileImageValue = toOptionalString(entry.profileImageUrl) ?? toOptionalString(entry.profileImage);
+      const profileImage =
+        profileImageValue && profileImageValue.startsWith("/")
+          ? `https://profileimg.plaync.com${profileImageValue}`
+          : profileImageValue ?? null;
+
+      return {
       characterId: normalizeCharacterId(entry.characterId),
       name: String(entry.name ?? "").replace(/<[^>]+>/g, "").trim(),
       serverId: toNumber(entry.serverId),
       serverName: String(entry.serverName ?? "").trim(),
-      className: String(entry.classText ?? entry.className ?? "").trim(),
+      className: String(entry.classText ?? entry.className ?? classNameFromMap ?? "").trim(),
       raceName: raceIdToName(toNumber(entry.race)),
       itemLevel: pickPositiveNumberFromValues([
         entry.itemLevel,
@@ -303,7 +358,9 @@ async function fetchPlayNcSearchSummaryByName(name: string, serverId: number): P
         entry.totalCombatPower,
         entry.cp,
       ]),
-    }))
+      profileImage,
+      };
+    })
     .filter((entry) => entry.characterId && entry.name && entry.serverId > 0);
 
   if (list.length === 0) {
@@ -482,37 +539,47 @@ export async function GET(request: NextRequest) {
       const normalizedTargetCharacterId = normalizeCharacterId(targetCharacterId);
       const referer = `https://aion2.plaync.com/ko-kr/characters/${serverId}/${encodeURIComponent(normalizedTargetCharacterId)}`;
       const languages = ["ko-kr", "ko"];
+      const headerVariants: Array<HeadersInit | undefined> = [
+        {
+          origin: "https://aion2.plaync.com",
+          referer,
+        },
+        undefined,
+      ];
       let fallbackPayload: { infoPayload: UnknownRecord; equipmentPayload: UnknownRecord } | null = null;
       let lastError: string | null = null;
 
-      for (const lang of languages) {
-        try {
-          const params = new URLSearchParams({
-            lang,
-            characterId: normalizedTargetCharacterId,
-            serverId: String(serverId),
-          });
+      for (let retry = 0; retry < 3; retry += 1) {
+        for (const lang of languages) {
+          for (const extraHeaders of headerVariants) {
+            try {
+              const params = new URLSearchParams({
+                lang,
+                characterId: normalizedTargetCharacterId,
+                serverId: String(serverId),
+                t: String(Date.now() + retry),
+              });
 
-          const infoUrl = `https://aion2.plaync.com/api/character/info?${params.toString()}`;
-          const equipmentUrl = `https://aion2.plaync.com/api/character/equipment?${params.toString()}`;
+              const infoUrl = `https://aion2.plaync.com/api/character/info?${params.toString()}`;
+              const equipmentUrl = `https://aion2.plaync.com/api/character/equipment?${params.toString()}`;
 
-          const [infoPayload, equipmentPayload] = await Promise.all([
-            fetchJson<UnknownRecord>(infoUrl, 10_000, {
-              origin: "https://aion2.plaync.com",
-              referer,
-            }),
-            fetchJson<UnknownRecord>(equipmentUrl, 10_000, {
-              origin: "https://aion2.plaync.com",
-              referer,
-            }),
-          ]);
+              const [infoPayload, equipmentPayload] = await Promise.all([
+                fetchJson<UnknownRecord>(infoUrl, 10_000, extraHeaders),
+                fetchJson<UnknownRecord>(equipmentUrl, 10_000, extraHeaders),
+              ]);
 
-          fallbackPayload = { infoPayload, equipmentPayload };
-          if (hasMeaningfulDetailPayload(infoPayload, equipmentPayload)) {
-            return fallbackPayload;
+              fallbackPayload = { infoPayload, equipmentPayload };
+              if (hasMeaningfulDetailPayload(infoPayload, equipmentPayload)) {
+                return fallbackPayload;
+              }
+            } catch (error) {
+              lastError = error instanceof Error ? error.message : "unknown";
+            }
           }
-        } catch (error) {
-          lastError = error instanceof Error ? error.message : "unknown";
+        }
+
+        if (retry < 2) {
+          await sleep(150 * (retry + 1));
         }
       }
 
@@ -609,7 +676,7 @@ export async function GET(request: NextRequest) {
         raceName: toOptionalString(profile.raceName) ?? summaryFallback?.raceName ?? "",
         regionName: toOptionalString(profile.regionName) ?? "",
         level: toNumber(profile.characterLevel, 0),
-        profileImage: toOptionalString(profile.profileImage) ?? null,
+        profileImage: toOptionalString(profile.profileImage) ?? summaryFallback?.profileImage ?? null,
         itemLevel: pickItemLevel(statList, profile) || summaryFallback?.itemLevel || 0,
         combatPower: pickCombatPower(profile) || summaryFallback?.combatPower || 0,
       },

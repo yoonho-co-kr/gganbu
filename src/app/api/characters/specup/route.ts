@@ -392,51 +392,62 @@ async function fetchPlayNcInfoAndEquipment(characterId: string, serverId: number
   const normalizedCharacterId = decodeCharacterId(characterId);
   const referer = `https://aion2.plaync.com/ko-kr/characters/${serverId}/${encodeURIComponent(normalizedCharacterId)}`;
   const languages = ["ko-kr", "ko"];
+  const headerVariants: Array<HeadersInit | undefined> = [
+    {
+      accept: "application/json, text/plain, */*",
+      "accept-language": "ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7",
+      origin: "https://aion2.plaync.com",
+      referer,
+      "user-agent":
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+    },
+    {
+      accept: "application/json, text/plain, */*",
+      "accept-language": "ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7",
+      "user-agent":
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+    },
+  ];
   let fallbackPayload: { infoPayload: UnknownRecord; equipmentPayload: UnknownRecord } | null = null;
   let lastError: string | null = null;
 
-  for (const lang of languages) {
-    const detailParams = new URLSearchParams({
-      lang,
-      characterId: normalizedCharacterId,
-      serverId: String(serverId),
-    });
+  for (let retry = 0; retry < 3; retry += 1) {
+    for (const lang of languages) {
+      const detailParams = new URLSearchParams({
+        lang,
+        characterId: normalizedCharacterId,
+        serverId: String(serverId),
+        t: String(Date.now() + retry),
+      });
 
-    try {
-      const [infoPayload, equipmentPayload] = await Promise.all([
-        fetchA2ToolJson<UnknownRecord>(`https://aion2.plaync.com/api/character/info?${detailParams.toString()}`, {
-          method: "GET",
-          headers: {
-            accept: "application/json, text/plain, */*",
-            "accept-language": "ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7",
-            origin: "https://aion2.plaync.com",
-            referer,
-            "user-agent":
-              "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
-          },
-        }),
-        fetchA2ToolJson<UnknownRecord>(
-          `https://aion2.plaync.com/api/character/equipment?${detailParams.toString()}`,
-          {
-            method: "GET",
-            headers: {
-              accept: "application/json, text/plain, */*",
-              "accept-language": "ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7",
-              origin: "https://aion2.plaync.com",
-              referer,
-              "user-agent":
-                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
-            },
-          },
-        ),
-      ]);
+      for (const headers of headerVariants) {
+        try {
+          const [infoPayload, equipmentPayload] = await Promise.all([
+            fetchA2ToolJson<UnknownRecord>(`https://aion2.plaync.com/api/character/info?${detailParams.toString()}`, {
+              method: "GET",
+              headers,
+            }),
+            fetchA2ToolJson<UnknownRecord>(
+              `https://aion2.plaync.com/api/character/equipment?${detailParams.toString()}`,
+              {
+                method: "GET",
+                headers,
+              },
+            ),
+          ]);
 
-      fallbackPayload = { infoPayload, equipmentPayload };
-      if (hasMeaningfulPlayNcDetailPayload(infoPayload, equipmentPayload)) {
-        return fallbackPayload;
+          fallbackPayload = { infoPayload, equipmentPayload };
+          if (hasMeaningfulPlayNcDetailPayload(infoPayload, equipmentPayload)) {
+            return fallbackPayload;
+          }
+        } catch (error) {
+          lastError = error instanceof Error ? error.message : "unknown";
+        }
       }
-    } catch (error) {
-      lastError = error instanceof Error ? error.message : "unknown";
+    }
+
+    if (retry < 2) {
+      await sleep(150 * (retry + 1));
     }
   }
 

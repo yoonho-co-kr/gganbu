@@ -192,6 +192,10 @@ function deriveClassKey(...candidates: unknown[]): string | undefined {
   return undefined;
 }
 
+async function sleep(ms: number) {
+  await new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 async function fetchJson<T>(url: string, init?: RequestInit, timeoutMs = 8_000): Promise<T> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
@@ -421,40 +425,79 @@ async function fetchPlayNcCharacterDetail(characterId: string, serverId: number)
   const normalizedCharacterId = normalizeCharacterId(characterId);
   const referer = `https://aion2.plaync.com/ko-kr/characters/${serverId}/${encodeURIComponent(normalizedCharacterId)}`;
   const languages = ["ko-kr", "ko"];
+  const headerVariants: Array<HeadersInit | undefined> = [
+    {
+      origin: "https://aion2.plaync.com",
+      referer,
+    },
+    undefined,
+  ];
   let detail: UnknownRecord | null = null;
 
-  for (const lang of languages) {
-    try {
-      const params = new URLSearchParams({
-        lang,
-        characterId: normalizedCharacterId,
-        serverId: String(serverId),
-      });
+  for (let retry = 0; retry < 3; retry += 1) {
+    for (const lang of languages) {
+      for (const extraHeaders of headerVariants) {
+        try {
+          const params = new URLSearchParams({
+            lang,
+            characterId: normalizedCharacterId,
+            serverId: String(serverId),
+            t: String(Date.now() + retry),
+          });
 
-      const payload = await fetchJson<UnknownRecord>(
-        `https://aion2.plaync.com/api/character/info?${params.toString()}`,
-        {
-          headers: {
-            origin: "https://aion2.plaync.com",
-            referer,
-          },
-        },
-      );
+          const payload = await fetchJson<UnknownRecord>(
+            `https://aion2.plaync.com/api/character/info?${params.toString()}`,
+            {
+              headers: extraHeaders,
+            },
+          );
 
-      const profile = asRecord(payload.profile) ?? {};
-      const statRoot = asRecord(payload.stat) ?? {};
+          const profile = asRecord(payload.profile) ?? {};
+          const statRoot = asRecord(payload.stat) ?? {};
+          const statList = asArray(statRoot.statList);
+          const hasData =
+            toOptionalString(profile.characterName) !== undefined ||
+            toNumber(profile.combatPower, 0) > 0 ||
+            statList.length > 0;
+
+          detail = payload;
+          if (hasData) {
+            break;
+          }
+        } catch {
+          // Keep trying additional combinations.
+        }
+      }
+
+      if (detail) {
+        const profile = asRecord(detail.profile) ?? {};
+        const statRoot = asRecord(detail.stat) ?? {};
+        const statList = asArray(statRoot.statList);
+        const hasData =
+          toOptionalString(profile.characterName) !== undefined ||
+          toNumber(profile.combatPower, 0) > 0 ||
+          statList.length > 0;
+        if (hasData) {
+          break;
+        }
+      }
+    }
+
+    if (detail) {
+      const profile = asRecord(detail.profile) ?? {};
+      const statRoot = asRecord(detail.stat) ?? {};
       const statList = asArray(statRoot.statList);
       const hasData =
         toOptionalString(profile.characterName) !== undefined ||
         toNumber(profile.combatPower, 0) > 0 ||
         statList.length > 0;
-
-      detail = payload;
       if (hasData) {
         break;
       }
-    } catch {
-      // Keep trying the next language variant.
+    }
+
+    if (retry < 2) {
+      await sleep(150 * (retry + 1));
     }
   }
 
