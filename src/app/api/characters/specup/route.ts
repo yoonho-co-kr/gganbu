@@ -298,6 +298,27 @@ function normalizeCharacterNameForMatch(value: string) {
   return value.replace(/<[^>]+>/g, "").replace(/\s+/g, "").toLowerCase();
 }
 
+function sanitizeCharacterName(value: string) {
+  return value.replace(/<[^>]+>/g, "").trim();
+}
+
+function decodeCharacterId(value: string) {
+  if (!value) {
+    return value;
+  }
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
+}
+
+function raceIdToName(raceId: number) {
+  if (raceId === 1) return "천족";
+  if (raceId === 2) return "마족";
+  return "";
+}
+
 function isAccessorySlotName(slotPosName: string) {
   return [
     "Necklace",
@@ -365,9 +386,19 @@ async function fetchPlayNcFallbackSpecupData(name: string, serverId: number) {
     .map((entry) => asRecord(entry))
     .filter((entry): entry is UnknownRecord => entry !== null)
     .map((entry) => ({
-      characterId: toText(entry.characterId),
-      name: toText(entry.name),
+      characterId: decodeCharacterId(toText(entry.characterId)),
+      name: sanitizeCharacterName(toText(entry.name)),
       serverId: toNumber(entry.serverId, 0),
+      raceId: toNumber(entry.race, 0),
+      className: toText(entry.classText) || toText(entry.className),
+      itemLevel: toNumber(
+        entry.itemLevel ?? entry.totalItemLevel ?? entry.itemLv ?? entry.item_level,
+        0,
+      ),
+      combatPower: toNumber(
+        entry.combatPower ?? entry.maxCombatPower ?? entry.battlePower ?? entry.totalCombatPower ?? entry.cp,
+        0,
+      ),
     }))
     .filter((entry) => entry.characterId.length > 0 && entry.name.length > 0 && entry.serverId > 0);
 
@@ -455,12 +486,36 @@ async function fetchPlayNcFallbackSpecupData(name: string, serverId: number) {
     }));
 
   const fallbackData: UnknownRecord = {
-    nickname: toText(profile.characterName) || picked.name || name,
-    race: toText(profile.raceName),
-    job: toText(profile.className),
-    nc_combat_power: pickCombatPowerFromPlayNcInfo(infoPayload),
+    nickname: toText(profile.characterName) || picked.name || sanitizeCharacterName(name),
+    race: toText(profile.raceName) || raceIdToName(picked.raceId),
+    job: toText(profile.className) || picked.className,
+    nc_combat_power: pickCombatPowerFromPlayNcInfo(infoPayload) || picked.combatPower,
     stat: {
-      statList: asArray(stat.statList),
+      statList: (() => {
+        const list = asArray(stat.statList);
+        const hasItemLevel = list.some((entry) => {
+          const record = asRecord(entry);
+          if (!record) {
+            return false;
+          }
+          const type = toText(record.type);
+          const statName = toText(record.name);
+          return type === "ItemLevel" || statName.includes("아이템레벨");
+        });
+
+        if (hasItemLevel || picked.itemLevel <= 0) {
+          return list;
+        }
+
+        return [
+          ...list,
+          {
+            type: "ItemLevel",
+            name: "아이템레벨",
+            value: picked.itemLevel,
+          },
+        ];
+      })(),
     },
     equipment,
     accessories,
