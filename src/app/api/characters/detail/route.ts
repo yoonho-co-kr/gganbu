@@ -44,6 +44,10 @@ type RankerSkillStatsByCategory = {
   passive: RankerSkillStat[];
   stigma: RankerSkillStat[];
 };
+type A2ToolSearchPayload = {
+  success?: boolean;
+  data?: UnknownRecord;
+};
 
 type A2ToolSkillStatsPayload = {
   success?: boolean;
@@ -157,6 +161,27 @@ function raceIdToName(raceId: number): string {
   return "";
 }
 
+function inferRaceCodeFromName(raceName: string): 1 | 2 | null {
+  if (raceName.includes("천") || raceName.includes("天")) {
+    return 1;
+  }
+  if (raceName.includes("마") || raceName.includes("魔")) {
+    return 2;
+  }
+  return null;
+}
+
+function inferRaceCandidates(raceName?: string): Array<1 | 2> {
+  const inferred = raceName ? inferRaceCodeFromName(raceName) : null;
+  if (inferred === 1) {
+    return [1, 2];
+  }
+  if (inferred === 2) {
+    return [2, 1];
+  }
+  return [1, 2];
+}
+
 function pickPositiveNumberFromValues(values: unknown[], fallback = 0): number {
   for (const value of values) {
     const numeric = toNumber(value, NaN);
@@ -181,6 +206,34 @@ async function fetchJson<T>(url: string, timeoutMs = 8000, headers?: HeadersInit
         "user-agent":
           "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
         ...(headers ?? {}),
+      },
+    });
+
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`);
+    }
+
+    return (await response.json()) as T;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function fetchA2ToolJson<T>(url: string, init: RequestInit, timeoutMs = 10_000): Promise<T> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    const response = await fetch(url, {
+      ...init,
+      cache: "no-store",
+      signal: controller.signal,
+      headers: {
+        accept: "application/json, text/plain, */*",
+        "accept-language": "ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7",
+        "user-agent":
+          "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+        ...(init.headers ?? {}),
       },
     });
 
@@ -453,6 +506,226 @@ function mapSkillList(list: unknown): CharacterSkill[] {
     .filter((entry) => entry.skillLevel >= 0 && entry.name.length > 0);
 }
 
+function pickA2ToolItemLevel(data: UnknownRecord): number {
+  const statRoot = asRecord(data.stat);
+  const statList = asArray(statRoot?.statList);
+  for (const entry of statList) {
+    const item = asRecord(entry);
+    if (!item) {
+      continue;
+    }
+
+    const type = String(item.type ?? "").trim().toLowerCase();
+    const name = String(item.name ?? "").trim();
+    if (type === "itemlevel" || name.includes("아이템레벨")) {
+      return toNumber(item.value, 0);
+    }
+  }
+
+  return 0;
+}
+
+function mapA2ToolStatList(data: UnknownRecord): Array<{ type: string; name: string; value: number }> {
+  const statRoot = asRecord(data.stat);
+  const statList = asArray(statRoot?.statList);
+
+  return statList
+    .map((entry) => asRecord(entry))
+    .filter((entry): entry is UnknownRecord => Boolean(entry))
+    .map((entry) => ({
+      type: toOptionalString(entry.type) ?? "",
+      name: toOptionalString(entry.name) ?? "",
+      value: toNumber(entry.value, 0),
+    }))
+    .filter((entry) => entry.type.length > 0 || entry.name.length > 0);
+}
+
+function mapA2ToolEquipmentList(list: unknown): EquipmentItem[] {
+  return asArray(list)
+    .map((entry) => asRecord(entry))
+    .filter((entry): entry is UnknownRecord => Boolean(entry))
+    .map((entry) => {
+      const raw = asRecord(entry.raw_data) ?? {};
+      const id = toNumber(raw.id ?? entry.item_id ?? entry.id, 0);
+      const name = toOptionalString(entry.name) ?? toOptionalString(raw.name) ?? "";
+      const grade = toOptionalString(entry.grade) ?? toOptionalString(raw.grade) ?? "";
+      const enchantLevel = toNumber(raw.enchantLevel ?? entry.enhance_level ?? entry.enchantLevel, 0);
+      const exceedLevel = toNumber(raw.exceedLevel ?? entry.exceed_level ?? entry.exceedLevel, 0);
+      const slotPos = toNumber(raw.slotPos ?? entry.slot_pos ?? entry.slotPos, 0);
+      const slotPosName =
+        toOptionalString(raw.slotPosName) ?? toOptionalString(entry.slot_pos_name) ?? toOptionalString(entry.slotPosName) ?? "";
+      const icon = toOptionalString(entry.icon_url) ?? toOptionalString(raw.icon) ?? null;
+
+      return {
+        id,
+        name,
+        grade,
+        enchantLevel,
+        exceedLevel,
+        slotPos,
+        slotPosName,
+        icon,
+      } satisfies EquipmentItem;
+    })
+    .filter((entry) => entry.id > 0 && entry.name.length > 0);
+}
+
+function mapA2ToolSkillList(list: unknown, categoryFallback: string): CharacterSkill[] {
+  return asArray(list)
+    .map((entry) => asRecord(entry))
+    .filter((entry): entry is UnknownRecord => Boolean(entry))
+    .map((entry) => ({
+      id: toNumber(entry.id, 0),
+      name: String(entry.name ?? "").trim(),
+      needLevel: toNumber(entry.needLevel ?? entry.need_level, 0),
+      category: String(entry.group ?? entry.category ?? categoryFallback).trim(),
+      skillLevel: toNumber(entry.level_int ?? entry.level ?? entry.skillLevel, 0),
+      targetLevel: 0,
+      acquired: 1,
+      equip: toNumber(entry.equip, 0),
+      icon: toOptionalString(entry.icon_url) ?? toOptionalString(entry.icon) ?? null,
+    }))
+    .filter((entry) => entry.name.length > 0 && entry.skillLevel >= 0);
+}
+
+async function fetchA2ToolCharacterByName(
+  name: string,
+  serverId: number,
+  raceCandidates: Array<1 | 2>,
+): Promise<UnknownRecord | null> {
+  if (!name.trim() || serverId <= 0) {
+    return null;
+  }
+
+  const referer = `https://aion2tool.com/char/serverid=${serverId}/${encodeURIComponent(name)}`;
+
+  for (const race of raceCandidates) {
+    try {
+      const payload = await fetchA2ToolJson<A2ToolSearchPayload>(
+        "https://aion2tool.com/api/character/search",
+        {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            origin: "https://aion2tool.com",
+            referer,
+          },
+          body: JSON.stringify({
+            race,
+            server_id: serverId,
+            keyword: name,
+          }),
+        },
+        12_000,
+      );
+
+      if (!payload.success || !payload.data) {
+        continue;
+      }
+
+      const data = asRecord(payload.data);
+      if (data) {
+        return data;
+      }
+    } catch {
+      // Try the next race candidate.
+    }
+  }
+
+  return null;
+}
+
+async function buildA2ToolFallbackDetail(params: {
+  characterId: string;
+  name: string;
+  serverId: number;
+  raceName?: string;
+  warnings: string[];
+}): Promise<UnknownRecord | null> {
+  const { characterId, name, serverId, raceName, warnings } = params;
+  const data = await fetchA2ToolCharacterByName(name, serverId, inferRaceCandidates(raceName));
+  if (!data) {
+    return null;
+  }
+
+  warnings.push("a2tool detail fallback applied");
+
+  const className = toOptionalString(data.job) ?? "";
+  const equipmentList = [
+    ...mapA2ToolEquipmentList(data.equipment),
+    ...mapA2ToolEquipmentList(data.accessories),
+  ];
+  const activeSkillsRaw = mapA2ToolSkillList(data.skills, "active").filter(
+    (skill) => skill.category.toLowerCase() === "active",
+  );
+  const passiveSkillsRaw = mapA2ToolSkillList(data.skills, "passive").filter(
+    (skill) => skill.category.toLowerCase() === "passive",
+  );
+  const stigmaSkillsRaw = mapA2ToolSkillList(data.stigmas, "dp");
+
+  let rankerStats: RankerSkillStatsByCategory | null = null;
+  try {
+    rankerStats = className ? await fetchA2ToolSkillStats(className) : null;
+  } catch {
+    rankerStats = null;
+  }
+
+  const activeRecommended =
+    rankerStats && rankerStats.active.length > 0
+      ? pickHighInvestmentSkillNames(rankerStats.active)
+      : new Set<string>();
+  const passiveRecommended =
+    rankerStats && rankerStats.passive.length > 0
+      ? pickHighInvestmentSkillNames(rankerStats.passive)
+      : new Set<string>();
+  const stigmaRecommended =
+    rankerStats && rankerStats.stigma.length > 0
+      ? pickHighInvestmentSkillNames(rankerStats.stigma)
+      : new Set<string>();
+
+  const activeSkills = applySkillTargets(activeSkillsRaw, "active", activeRecommended);
+  const passiveSkills = applySkillTargets(passiveSkillsRaw, "passive", passiveRecommended);
+  const stigmaSkills = applySkillTargets(stigmaSkillsRaw, "stigma", stigmaRecommended);
+  const statList = mapA2ToolStatList(data);
+
+  return {
+    source: "a2tool-api",
+    profile: {
+      characterId,
+      characterName: toOptionalString(data.nickname) ?? name,
+      serverId: toNumber(data.server_id, serverId),
+      serverName: toOptionalString(data.server) ?? "",
+      className,
+      raceName: toOptionalString(data.race) ?? raceName ?? "",
+      regionName: toOptionalString(data.guild) ?? "",
+      level: toNumber(data.level, 0),
+      profileImage: toOptionalString(data.character_image_url) ?? null,
+      itemLevel: pickA2ToolItemLevel(data),
+      combatPower: pickPositiveNumberFromValues([
+        data.nc_combat_power,
+        data.combat_power,
+        data.combatPower,
+        data.maxCombatPower,
+      ]),
+    },
+    skills: {
+      activeSkills,
+      passiveSkills,
+      stigmaSkills,
+    },
+    statList,
+    equipment: {
+      equipmentList,
+      skinList: [],
+    },
+    links: {
+      plaync: `https://aion2.plaync.com/ko-kr/characters/${serverId}/${encodeURIComponent(characterId)}`,
+      aon2: `https://aon2.info/character/${serverId}/${encodeURIComponent(characterId)}`,
+    },
+    warnings,
+  };
+}
+
 function pickSkillEntries(
   skills: CharacterSkill[],
   category: "active" | "passive" | "stigma",
@@ -627,12 +900,27 @@ export async function GET(request: NextRequest) {
     const equipmentRoot = asRecord(equipmentPayload.equipment) ?? {};
     const skillRoot = asRecord(equipmentPayload.skill) ?? {};
     const skillList = mapSkillList(skillRoot.skillList);
+    const meaningfulPayload = hasMeaningfulDetailPayload(infoPayload, equipmentPayload);
     const summaryFallback =
-      hasMeaningfulDetailPayload(infoPayload, equipmentPayload) || !characterNameRaw
+      meaningfulPayload || !characterNameRaw
         ? null
         : await fetchPlayNcSearchSummaryByName(characterNameRaw, serverId).catch(() => null);
     if (summaryFallback) {
       warnings.push("plaync summary fallback applied");
+    }
+
+    if (!meaningfulPayload && characterNameRaw) {
+      const a2toolFallback = await buildA2ToolFallbackDetail({
+        characterId: resolvedCharacterId,
+        name: characterNameRaw,
+        serverId,
+        raceName: toOptionalString(profile.raceName) ?? summaryFallback?.raceName,
+        warnings,
+      });
+
+      if (a2toolFallback) {
+        return NextResponse.json(a2toolFallback);
+      }
     }
 
     const className = toOptionalString(profile.className) ?? summaryFallback?.className ?? "";

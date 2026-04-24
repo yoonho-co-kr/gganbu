@@ -14,10 +14,22 @@ type ClassMeta = {
   classKey?: string;
   classIconUrl?: string | null;
 };
+type A2ToolSearchPayload = {
+  success?: boolean;
+  data?: UnknownRecord;
+};
+type A2ToolCharacterSnapshot = {
+  className?: string;
+  classKey?: string;
+  classIconUrl?: string | null;
+  itemLevel: number;
+  combatPower: number;
+};
 
 const DEFAULT_PAGE_SIZE = 40;
 const DETAIL_ENRICH_LIMIT = 20;
 const DETAIL_BATCH_SIZE = 5;
+const A2TOOL_ENRICH_LIMIT = 12;
 const CLASS_MAP_TTL_MS = 10 * 60 * 1000;
 const CLASS_ICON_BASE_URL = "https://assets.playnccdn.com/static-aion2/characters/img/class";
 const CLASS_KEY_ALIAS: Record<string, string> = {
@@ -190,6 +202,110 @@ function deriveClassKey(...candidates: unknown[]): string | undefined {
     }
   }
   return undefined;
+}
+
+function inferRaceCandidates(value: unknown): Array<1 | 2> {
+  const race = toNumber(value, 0);
+  if (race === 1) {
+    return [1, 2];
+  }
+  if (race === 2) {
+    return [2, 1];
+  }
+  return [1, 2];
+}
+
+function parseClassKeyFromIconUrl(iconUrl: unknown): string | undefined {
+  if (typeof iconUrl !== "string" || iconUrl.length === 0) {
+    return undefined;
+  }
+
+  const matched = iconUrl.match(/class_icon_([a-z0-9_]+)\.png/i);
+  if (!matched?.[1]) {
+    return undefined;
+  }
+
+  return normalizeClassKey(matched[1]);
+}
+
+function pickA2ToolItemLevel(payload: UnknownRecord): number {
+  const statRoot = asRecord(payload.stat);
+  const statList = asArray(statRoot?.statList);
+  for (const entry of statList) {
+    const item = asRecord(entry);
+    if (!item) {
+      continue;
+    }
+
+    const type = String(item.type ?? "").trim().toLowerCase();
+    const name = String(item.name ?? "").trim();
+    if (type === "itemlevel" || name.includes("아이템레벨")) {
+      return toNumber(item.value, 0);
+    }
+  }
+  return 0;
+}
+
+async function fetchA2ToolCharacterSnapshot(
+  name: string,
+  serverId: number,
+  raceCandidates: Array<1 | 2>,
+): Promise<A2ToolCharacterSnapshot | null> {
+  if (!name.trim() || serverId <= 0) {
+    return null;
+  }
+
+  const referer = `https://aion2tool.com/char/serverid=${serverId}/${encodeURIComponent(name)}`;
+
+  for (const race of raceCandidates) {
+    try {
+      const payload = await fetchJson<A2ToolSearchPayload>(
+        "https://aion2tool.com/api/character/search",
+        {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            origin: "https://aion2tool.com",
+            referer,
+          },
+          body: JSON.stringify({
+            race,
+            server_id: serverId,
+            keyword: name,
+          }),
+        },
+        10_000,
+      );
+
+      if (!payload.success || !payload.data) {
+        continue;
+      }
+
+      const data = asRecord(payload.data);
+      if (!data) {
+        continue;
+      }
+
+      const className = toOptionalString(data.job);
+      const classKey = deriveClassKey(className, parseClassKeyFromIconUrl(data.job_image_url));
+      return {
+        className,
+        classKey,
+        classIconUrl: toClassIconUrl(classKey),
+        itemLevel: pickA2ToolItemLevel(data),
+        combatPower: pickPositiveNumberFromValues([
+          data.nc_combat_power,
+          data.combat_power,
+          data.combatPower,
+          data.maxCombatPower,
+        ]),
+      };
+    } catch {
+      // Try next race candidate.
+    }
+  }
+
+  return null;
 }
 
 async function sleep(ms: number) {
@@ -680,6 +796,70 @@ async function enrichMissingStatsFromPlayNcDetail(
   return base;
 }
 
+async function enrichMissingStatsFromA2Tool(characters: CharacterSummary[]): Promise<CharacterSummary[]> {
+  const base = [...characters];
+  const byId = new Map(base.map((character) => [character.id, character]));
+  const target = base
+    .filter(
+      (character) =>
+        character.itemLevel <= 0 ||
+        character.combatPower <= 0 ||
+        !toOptionalString(character.className),
+    )
+    .slice(0, A2TOOL_ENRICH_LIMIT);
+  const cache = new Map<string, A2ToolCharacterSnapshot | null>();
+
+  for (let index = 0; index < target.length; index += DETAIL_BATCH_SIZE) {
+    const batch = target.slice(index, index + DETAIL_BATCH_SIZE);
+
+    const results = await Promise.all(
+      batch.map(async (character) => {
+        const cacheKey = `${character.serverId}:${character.name}:${character.race ?? 0}`;
+        if (cache.has(cacheKey)) {
+          return { character, snapshot: cache.get(cacheKey) ?? null };
+        }
+
+        const snapshot = await fetchA2ToolCharacterSnapshot(
+          character.name,
+          character.serverId,
+          inferRaceCandidates(character.race),
+        );
+        cache.set(cacheKey, snapshot);
+        return { character, snapshot };
+      }),
+    );
+
+    for (const item of results) {
+      if (!item.snapshot) {
+        continue;
+      }
+
+      const entry = byId.get(item.character.id);
+      if (!entry) {
+        continue;
+      }
+
+      if (entry.itemLevel <= 0 && item.snapshot.itemLevel > 0) {
+        entry.itemLevel = item.snapshot.itemLevel;
+      }
+      if (entry.combatPower <= 0 && item.snapshot.combatPower > 0) {
+        entry.combatPower = item.snapshot.combatPower;
+      }
+      if (!entry.className && item.snapshot.className) {
+        entry.className = item.snapshot.className;
+      }
+      if (!entry.classKey && item.snapshot.classKey) {
+        entry.classKey = item.snapshot.classKey;
+      }
+      if (!entry.classIconUrl && item.snapshot.classIconUrl) {
+        entry.classIconUrl = item.snapshot.classIconUrl;
+      }
+    }
+  }
+
+  return base;
+}
+
 async function searchWithPlayNcApi(name: string, serverId?: number, size = DEFAULT_PAGE_SIZE) {
   const params = new URLSearchParams({
     keyword: name,
@@ -835,6 +1015,11 @@ export async function GET(request: NextRequest) {
       } catch (error) {
         warnings.push(`plaync detail enrich on aon2 error: ${error instanceof Error ? error.message : "unknown"}`);
       }
+      try {
+        enriched = await enrichMissingStatsFromA2Tool(enriched);
+      } catch (error) {
+        warnings.push(`a2tool enrich on aon2 error: ${error instanceof Error ? error.message : "unknown"}`);
+      }
 
       return NextResponse.json({
         source: "aon2-api",
@@ -850,9 +1035,16 @@ export async function GET(request: NextRequest) {
   try {
     const playncApi = await searchWithPlayNcApi(name, serverId, size);
     if (playncApi.length > 0) {
+      let enriched = playncApi;
+      try {
+        enriched = await enrichMissingStatsFromA2Tool(playncApi);
+      } catch (error) {
+        warnings.push(`a2tool enrich on plaync error: ${error instanceof Error ? error.message : "unknown"}`);
+      }
+
       return NextResponse.json({
         source: "plaync-api",
-        items: playncApi,
+        items: enriched,
         warnings,
       });
     }
@@ -870,6 +1062,11 @@ export async function GET(request: NextRequest) {
         enriched = await enrichMissingStatsFromPlayNcDetail(scraped, classMap);
       } catch (error) {
         warnings.push(`plaync detail enrich on scrape error: ${error instanceof Error ? error.message : "unknown"}`);
+      }
+      try {
+        enriched = await enrichMissingStatsFromA2Tool(enriched);
+      } catch (error) {
+        warnings.push(`a2tool enrich on scrape error: ${error instanceof Error ? error.message : "unknown"}`);
       }
 
       return NextResponse.json({

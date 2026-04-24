@@ -470,11 +470,127 @@ function characterKey(character: CharacterSummary) {
 }
 
 function normalizeCharacterId(characterId: string) {
-  try {
-    return decodeURIComponent(characterId);
-  } catch {
-    return characterId;
+  let normalized = characterId.trim();
+  if (!normalized) {
+    return "";
   }
+
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    try {
+      const decoded = decodeURIComponent(normalized);
+      if (!decoded || decoded === normalized) {
+        break;
+      }
+      normalized = decoded;
+    } catch {
+      break;
+    }
+  }
+
+  return normalized.trim();
+}
+
+type ParsedCharacterLink = {
+  source: "plaync-link" | "aon2-link" | "a2tool-link";
+  serverId: number;
+  characterId?: string;
+  name?: string;
+};
+
+function parseCharacterLink(input: string): ParsedCharacterLink | null {
+  const raw = input.trim();
+  if (!raw) {
+    return null;
+  }
+
+  const normalizedInput = /^https?:\/\//i.test(raw) ? raw : `https://${raw}`;
+
+  let url: URL;
+  try {
+    url = new URL(normalizedInput);
+  } catch {
+    return null;
+  }
+
+  const host = url.hostname.toLowerCase();
+  const segments = url.pathname.split("/").filter(Boolean);
+
+  if (host.includes("aion2.plaync.com")) {
+    const charactersIndex = segments.findIndex((segment) => segment === "characters");
+    if (charactersIndex >= 0) {
+      const serverSegment = segments[charactersIndex + 1];
+      const characterSegment = segments[charactersIndex + 2];
+
+      if (serverSegment === "character-info") {
+        const serverIdFromQuery = Number(url.searchParams.get("serverId") ?? "");
+        const characterIdFromQuery = normalizeCharacterId(url.searchParams.get("characterId") ?? "");
+        if (serverIdFromQuery > 0 && characterIdFromQuery) {
+          return {
+            source: "plaync-link",
+            serverId: serverIdFromQuery,
+            characterId: characterIdFromQuery,
+          };
+        }
+      }
+
+      if (serverSegment && characterSegment && /^\d+$/.test(serverSegment)) {
+        return {
+          source: "plaync-link",
+          serverId: Number(serverSegment),
+          characterId: normalizeCharacterId(characterSegment),
+        };
+      }
+    }
+
+    const serverIdFromQuery = Number(url.searchParams.get("serverId") ?? "");
+    const characterIdFromQuery = normalizeCharacterId(url.searchParams.get("characterId") ?? "");
+    if (serverIdFromQuery > 0 && characterIdFromQuery) {
+      return {
+        source: "plaync-link",
+        serverId: serverIdFromQuery,
+        characterId: characterIdFromQuery,
+      };
+    }
+  }
+
+  if (host.includes("aon2.info")) {
+    const characterIndex = segments.findIndex((segment) => segment === "character");
+    const serverSegment = segments[characterIndex + 1];
+    const characterSegment = segments[characterIndex + 2];
+
+    if (characterIndex >= 0 && serverSegment && characterSegment && /^\d+$/.test(serverSegment)) {
+      return {
+        source: "aon2-link",
+        serverId: Number(serverSegment),
+        characterId: normalizeCharacterId(characterSegment),
+      };
+    }
+  }
+
+  if (host.includes("aion2tool.com")) {
+    const charIndex = segments.findIndex((segment) => segment === "char");
+    const serverSegment = segments[charIndex + 1] ?? "";
+    const nameSegment = segments[charIndex + 2] ?? "";
+    const match = serverSegment.match(/^serverid=(\d+)$/i);
+    if (charIndex >= 0 && match && nameSegment) {
+      let decodedName = nameSegment.trim();
+      try {
+        decodedName = decodeURIComponent(nameSegment).trim();
+      } catch {
+        decodedName = nameSegment.trim();
+      }
+      if (!decodedName) {
+        return null;
+      }
+      return {
+        source: "a2tool-link",
+        serverId: Number(match[1]),
+        name: decodedName,
+      };
+    }
+  }
+
+  return null;
 }
 
 function slotMemoKey(partyId: string, slotIndex: number) {
@@ -882,6 +998,7 @@ export default function PartyBuilderPage({
 
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [modalQuery, setModalQuery] = useState("");
+  const [modalCharacterLink, setModalCharacterLink] = useState("");
   const [modalServerId, setModalServerId] = useState<string>("");
   const [modalResults, setModalResults] = useState<CharacterSummary[]>([]);
   const [modalSource, setModalSource] = useState("");
@@ -1097,6 +1214,138 @@ export default function PartyBuilderPage({
       setModalResults([]);
       setModalSource("");
       setModalError(searchError instanceof Error ? searchError.message : "검색에 실패했습니다.");
+    } finally {
+      setModalLoading(false);
+    }
+  };
+
+  const importCharacterByLink = async () => {
+    const parsed = parseCharacterLink(modalCharacterLink);
+    if (!parsed) {
+      setModalError("지원하지 않는 링크 형식입니다. PlayNC/AON2/A2Tool 캐릭터 링크를 확인해 주세요.");
+      return;
+    }
+
+    setModalLoading(true);
+    setModalError("");
+    setModalSource("");
+
+    const searchByName = async (name: string, serverId: number, preferCharacterId?: string) => {
+      const params = new URLSearchParams({
+        name,
+        serverId: String(serverId),
+        size: "20",
+        t: Date.now().toString(),
+      });
+
+      const response = await fetch(`/api/characters/search?${params.toString()}`, {
+        cache: "no-store",
+      });
+      const payload = (await response.json()) as {
+        items?: CharacterSummary[];
+        source?: string;
+        error?: string;
+      };
+
+      if (!response.ok) {
+        throw new Error(payload.error ?? "검색에 실패했습니다.");
+      }
+
+      const items = Array.isArray(payload.items) ? payload.items : [];
+      if (items.length === 0) {
+        return { picked: null as CharacterSummary | null, source: payload.source ?? "" };
+      }
+
+      const normalizedPreferCharacterId = preferCharacterId ? normalizeCharacterId(preferCharacterId) : "";
+      const picked =
+        items.find(
+          (item) =>
+            item.serverId === serverId &&
+            normalizedPreferCharacterId &&
+            normalizeCharacterId(item.characterId) === normalizedPreferCharacterId,
+        ) ??
+        items.find((item) => item.serverId === serverId && item.name === name) ??
+        items[0] ??
+        null;
+
+      return { picked, source: payload.source ?? "" };
+    };
+
+    try {
+      if (parsed.name && !parsed.characterId) {
+        const { picked, source } = await searchByName(parsed.name, parsed.serverId);
+        if (!picked) {
+          throw new Error("링크에서 캐릭터를 찾지 못했습니다.");
+        }
+        setModalResults([picked]);
+        setModalSource(source ? `${parsed.source} → ${source}` : parsed.source);
+        return;
+      }
+
+      if (!parsed.characterId) {
+        throw new Error("링크에 characterId 정보가 없습니다.");
+      }
+
+      const detailParams = new URLSearchParams({
+        characterId: parsed.characterId,
+        serverId: String(parsed.serverId),
+        t: Date.now().toString(),
+      });
+      const detailResponse = await fetch(`/api/characters/detail?${detailParams.toString()}`, {
+        cache: "no-store",
+      });
+
+      const detailPayload = (await detailResponse.json()) as CharacterDetailData & { error?: string };
+      if (!detailResponse.ok) {
+        throw new Error(detailPayload.error ?? "링크 상세 조회에 실패했습니다.");
+      }
+
+      const normalizedCharacterId = normalizeCharacterId(detailPayload.profile.characterId || parsed.characterId);
+      const serverId = detailPayload.profile.serverId || parsed.serverId;
+      const serverName =
+        detailPayload.profile.serverName ||
+        servers.find((server) => server.serverId === serverId)?.serverName ||
+        String(serverId);
+
+      let base: CharacterSummary = {
+        id: `${serverId}:${normalizedCharacterId}`,
+        characterId: normalizedCharacterId,
+        name: detailPayload.profile.characterName || "",
+        serverId,
+        serverName,
+        level: detailPayload.profile.level || 0,
+        className: detailPayload.profile.className || undefined,
+        itemLevel: detailPayload.profile.itemLevel || 0,
+        combatPower: detailPayload.profile.combatPower || 0,
+        profileImageUrl: detailPayload.profile.profileImage || null,
+        source: "plaync-api",
+      };
+
+      if (!base.name) {
+        throw new Error("링크 상세 응답에 캐릭터명이 없어 불러올 수 없습니다.");
+      }
+
+      if (base.itemLevel <= 0 || base.combatPower <= 0 || !base.className) {
+        try {
+          const { picked, source } = await searchByName(base.name, base.serverId, base.characterId);
+          if (picked) {
+            base = mergeCharacterStats(base, picked);
+            setModalSource(source ? `${parsed.source} → detail+${source}` : `${parsed.source} → detail`);
+          } else {
+            setModalSource(`${parsed.source} → detail`);
+          }
+        } catch {
+          setModalSource(`${parsed.source} → detail`);
+        }
+      } else {
+        setModalSource(`${parsed.source} → detail`);
+      }
+
+      setModalResults([base]);
+    } catch (error) {
+      setModalResults([]);
+      setModalSource("");
+      setModalError(error instanceof Error ? error.message : "링크 불러오기에 실패했습니다.");
     } finally {
       setModalLoading(false);
     }
@@ -1749,6 +1998,7 @@ export default function PartyBuilderPage({
               onClick={() => {
                 setIsModalOpen(true);
                 setModalError("");
+                setModalCharacterLink("");
               }}
               className={BUTTON_PRIMARY_CLASS}
             >
@@ -2082,6 +2332,26 @@ export default function PartyBuilderPage({
                     {modalLoading ? "검색중..." : "검색"}
                   </button>
                 </form>
+
+                <div className="space-y-2">
+                  <p className="text-xs font-semibold uppercase tracking-wide text-neutral-400">캐릭터 링크 불러오기</p>
+                  <div className="grid grid-cols-[minmax(0,1fr)_140px] gap-2">
+                    <input
+                      value={modalCharacterLink}
+                      onChange={(event) => setModalCharacterLink(event.target.value)}
+                      placeholder="PlayNC/AON2/A2Tool 캐릭터 링크"
+                      className={INPUT_CLASS}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => void importCharacterByLink()}
+                      disabled={modalLoading}
+                      className={`${BUTTON_SECONDARY_CLASS} disabled:cursor-not-allowed disabled:opacity-50`}
+                    >
+                      {modalLoading ? "불러오는중..." : "링크 불러오기"}
+                    </button>
+                  </div>
+                </div>
 
                 <div className="rounded-lg border border-neutral-700 bg-neutral-800/60 px-3 py-2 text-xs text-neutral-400">
                   {modalSource ? <p>검색 소스: {modalSource}</p> : <p>검색 소스: 대기</p>}
