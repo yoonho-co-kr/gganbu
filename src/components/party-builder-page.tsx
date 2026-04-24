@@ -1009,6 +1009,7 @@ export default function PartyBuilderPage({
   const [waitingList, setWaitingList] = useState<CharacterSummary[]>(() => parsedInitialSnapshot?.waitingList ?? []);
   const [slotMemos, setSlotMemos] = useState<SlotMemoMap>({});
   const [servers, setServers] = useState<ServerInfo[]>([]);
+  const [serversError, setServersError] = useState("");
 
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [modalQuery, setModalQuery] = useState("");
@@ -1142,10 +1143,20 @@ export default function PartyBuilderPage({
           cache: "no-store",
         });
 
-        const payload = (await response.json()) as { items?: ServerInfo[] };
-        setServers(Array.isArray(payload.items) ? payload.items : []);
+        const payload = (await response.json()) as {
+          items?: ServerInfo[];
+          error?: string;
+        };
+        if (!response.ok) {
+          throw new Error(payload.error ?? "서버 목록 API 연결에 실패했습니다.");
+        }
+
+        const items = Array.isArray(payload.items) ? payload.items : [];
+        setServers(items);
+        setServersError(items.length > 0 ? "" : "서버 목록이 비어 있습니다.");
       } catch {
         setServers([]);
+        setServersError("서버 목록을 불러오지 못했습니다.");
       }
     };
 
@@ -2407,6 +2418,7 @@ export default function PartyBuilderPage({
                 </div>
 
                 {modalError ? <p className="text-sm text-rose-500">{modalError}</p> : null}
+                {serversError ? <p className="text-xs text-rose-400">{serversError}</p> : null}
               </aside>
 
               <section className="min-h-0 flex flex-col">
