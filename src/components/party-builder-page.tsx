@@ -195,6 +195,7 @@ type DropPayload =
 const SLOT_COUNT = 8;
 const STORAGE_KEY = "aion2-party-builder:v2";
 const SLOT_MEMO_MAX_LENGTH = 80;
+const AUTO_SPEC_REFRESH_INTERVAL_MS = 60 * 60 * 1000;
 const PANEL_CLASS = "";
 const INPUT_CLASS =
   "h-8 rounded-md border border-neutral-700 bg-neutral-950 px-3 text-sm text-neutral-100 placeholder:text-neutral-500 outline-none transition focus:border-neutral-500 focus:ring-2 focus:ring-neutral-800 select-text";
@@ -394,14 +395,27 @@ function renderBreakthroughPips(exceedLevel: number): React.ReactNode {
   );
 }
 
-function createParty(kind: PartyKind, index: number): Party {
+function createParty(kind: PartyKind, index: number, id?: string): Party {
   const kindName = kind === "rudra" ? "루드라" : "침식";
   return {
-    id: globalThis.crypto?.randomUUID?.() ?? `party-${Date.now()}-${Math.random()}`,
+    id: id ?? `${kind}-${index}`,
     name: `${kindName} 파티 ${index}`,
     kind,
     slots: Array.from({ length: SLOT_COUNT }, () => null),
   };
+}
+
+function generateNextPartyId(kind: PartyKind, existing: Party[]) {
+  let sequence = existing.filter((party) => party.kind === kind).length + 1;
+  let candidate = `${kind}-${sequence}`;
+  const used = new Set(existing.map((party) => party.id));
+
+  while (used.has(candidate)) {
+    sequence += 1;
+    candidate = `${kind}-${sequence}`;
+  }
+
+  return candidate;
 }
 
 function formatNumber(value: number) {
@@ -624,7 +638,7 @@ function copyParties(parties: Party[]): Party[] {
 }
 
 function createDefaultParties() {
-  return [createParty("rudra", 1), createParty("erosion", 1)];
+  return [createParty("rudra", 1, "rudra-1"), createParty("erosion", 1, "erosion-1")];
 }
 
 function clonePartiesFromSnapshot(parties: ShareSnapshot["parties"]): Party[] {
@@ -1027,9 +1041,11 @@ export default function PartyBuilderPage({
   const [specRefreshLoading, setSpecRefreshLoading] = useState(false);
   const [specRefreshMessage, setSpecRefreshMessage] = useState("");
   const [specRefreshError, setSpecRefreshError] = useState("");
+  const [sharedCreatedText, setSharedCreatedText] = useState("");
 
   const [activeDrag, setActiveDrag] = useState<DragPayload | null>(null);
   const specupRequestIdRef = useRef(0);
+  const refreshAllSpecsRef = useRef<((options?: { silent?: boolean }) => Promise<void>) | null>(null);
 
   const sensors = useSensors(
     useSensor(MouseSensor, { activationConstraint: { distance: 4 } }),
@@ -1042,16 +1058,19 @@ export default function PartyBuilderPage({
   );
   const rudraPartyCount = useMemo(() => parties.filter((party) => party.kind === "rudra").length, [parties]);
   const erosionPartyCount = useMemo(() => parties.filter((party) => party.kind === "erosion").length, [parties]);
-  const sharedCreatedText = useMemo(() => {
+  useEffect(() => {
     if (!sharedCreatedAt) {
-      return "";
+      setSharedCreatedText("");
+      return;
     }
 
     const parsed = new Date(sharedCreatedAt);
     if (Number.isNaN(parsed.getTime())) {
-      return "";
+      setSharedCreatedText("");
+      return;
     }
-    return parsed.toLocaleString("ko-KR");
+
+    setSharedCreatedText(parsed.toLocaleString("ko-KR", { timeZone: "Asia/Seoul" }));
   }, [sharedCreatedAt]);
 
   const assignmentMap = useMemo(() => {
@@ -1138,7 +1157,8 @@ export default function PartyBuilderPage({
   const addParty = (kind: PartyKind) => {
     setParties((previous) => {
       const nextIndex = previous.filter((party) => party.kind === kind).length + 1;
-      return [...previous, createParty(kind, nextIndex)];
+      const nextId = generateNextPartyId(kind, previous);
+      return [...previous, createParty(kind, nextIndex, nextId)];
     });
   };
 
@@ -1570,7 +1590,8 @@ export default function PartyBuilderPage({
     }
   };
 
-  const refreshAllCharacterSpecs = async () => {
+  const refreshAllCharacterSpecs = async (options?: { silent?: boolean }) => {
+    const silent = options?.silent ?? false;
     if (specRefreshLoading) {
       return;
     }
@@ -1591,14 +1612,18 @@ export default function PartyBuilderPage({
 
     const targets = Array.from(uniqueMap.values());
     if (targets.length === 0) {
-      setSpecRefreshError("재조회할 캐릭터가 없습니다.");
-      setSpecRefreshMessage("");
+      if (!silent) {
+        setSpecRefreshError("재조회할 캐릭터가 없습니다.");
+        setSpecRefreshMessage("");
+      }
       return;
     }
 
     setSpecRefreshLoading(true);
-    setSpecRefreshError("");
-    setSpecRefreshMessage("");
+    if (!silent) {
+      setSpecRefreshError("");
+      setSpecRefreshMessage("");
+    }
 
     try {
       const refreshedEntries = await Promise.all(
@@ -1697,7 +1722,9 @@ export default function PartyBuilderPage({
       }
 
       if (updates.size === 0) {
-        setSpecRefreshError("재조회 결과를 찾지 못했습니다.");
+        if (!silent) {
+          setSpecRefreshError("재조회 결과를 찾지 못했습니다.");
+        }
         return;
       }
 
@@ -1709,13 +1736,33 @@ export default function PartyBuilderPage({
         })),
       );
 
-      setSpecRefreshMessage(`${targets.length.toLocaleString("ko-KR")}명 중 ${updates.size.toLocaleString("ko-KR")}명 재조회 완료`);
+      if (!silent) {
+        setSpecRefreshMessage(`${targets.length.toLocaleString("ko-KR")}명 중 ${updates.size.toLocaleString("ko-KR")}명 재조회 완료`);
+      }
     } catch {
-      setSpecRefreshError("스펙 재조회 중 오류가 발생했습니다.");
+      if (!silent) {
+        setSpecRefreshError("스펙 재조회 중 오류가 발생했습니다.");
+      }
     } finally {
       setSpecRefreshLoading(false);
     }
   };
+
+  useEffect(() => {
+    refreshAllSpecsRef.current = refreshAllCharacterSpecs;
+  }, [refreshAllCharacterSpecs]);
+
+  useEffect(() => {
+    const intervalId = window.setInterval(() => {
+      const runner = refreshAllSpecsRef.current;
+      if (!runner) {
+        return;
+      }
+      void runner({ silent: true });
+    }, AUTO_SPEC_REFRESH_INTERVAL_MS);
+
+    return () => window.clearInterval(intervalId);
+  }, []);
 
   const removeFromWaitingList = (character: CharacterSummary) => {
     setWaitingList((previous) => previous.filter((entry) => !sameCharacter(entry, character)));
@@ -2022,6 +2069,7 @@ export default function PartyBuilderPage({
             >
               {specRefreshLoading ? "스펙 재조회중..." : "스펙 전체 재조회"}
             </button>
+            <p className="col-span-2 -mt-1 text-[11px] text-neutral-400">자동 재조회: 1시간마다</p>
 
             <button
               type="button"
