@@ -732,22 +732,31 @@ async function enrichMissingStatsFromPlayNcDetail(
 }
 
 async function searchWithPlayNcApi(name: string, serverId?: number, size = DEFAULT_PAGE_SIZE) {
-  const params = new URLSearchParams({
-    keyword: name,
-    page: "0",
-    size: String(size),
-  });
+  const fetchSearchList = async (targetServerId?: number) => {
+    const params = new URLSearchParams({
+      keyword: name,
+      page: "0",
+      size: String(size),
+    });
 
-  if (serverId) {
-    params.set("serverId", String(serverId));
+    if (targetServerId) {
+      params.set("serverId", String(targetServerId));
+    }
+
+    const payload = await fetchJson<{ list?: UnknownRecord[] }>(
+      `https://aion2.plaync.com/ko-kr/api/search/aion2/search/v2/character?${params.toString()}`,
+    );
+
+    return Array.isArray(payload.list) ? payload.list : [];
+  };
+
+  const classMap = await getPlayNcClassMap();
+  let list = await fetchSearchList(serverId);
+
+  if (serverId && list.length === 0) {
+    list = await fetchSearchList();
   }
 
-  const payload = await fetchJson<{ list?: UnknownRecord[] }>(
-    `https://aion2.plaync.com/ko-kr/api/search/aion2/search/v2/character?${params.toString()}`,
-  );
-  const classMap = await getPlayNcClassMap();
-
-  const list = Array.isArray(payload.list) ? payload.list : [];
   const mapped = list
     .map((item) => mapPlayNcSearchItem(item, classMap))
     .filter((item): item is CharacterSummary => !!item);
@@ -760,7 +769,9 @@ async function searchWithPlayNcApi(name: string, serverId?: number, size = DEFAU
 }
 
 async function searchWithPlayNcScrape(name: string, serverId?: number): Promise<CharacterSummary[]> {
-  const params = new URLSearchParams({ keyword: name });
+  const params = new URLSearchParams({
+    keyword: name,
+  });
   if (serverId) {
     params.set("serverId", String(serverId));
   }
@@ -933,12 +944,9 @@ export async function GET(request: NextRequest) {
     warnings.push(`plaync scrape error: ${error instanceof Error ? error.message : "unknown"}`);
   }
 
-  return NextResponse.json(
-    {
-      error: "캐릭터를 찾지 못했습니다.",
-      items: [],
-      warnings,
-    },
-    { status: 404 },
-  );
+  return NextResponse.json({
+    source: "not-found",
+    items: [],
+    warnings,
+  });
 }
