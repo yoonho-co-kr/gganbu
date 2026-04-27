@@ -21,21 +21,104 @@ function toNumber(value: unknown, fallback = 0): number {
   return fallback;
 }
 
-function normalizeServers(list: unknown): ServerInfo[] {
-  if (!Array.isArray(list)) {
+function asRecord(value: unknown): UnknownRecord | undefined {
+  if (!value || typeof value !== "object") {
+    return undefined;
+  }
+  return value as UnknownRecord;
+}
+
+function toOptionalString(value: unknown): string | undefined {
+  if (typeof value !== "string") {
+    return undefined;
+  }
+  const trimmed = value.trim();
+  return trimmed ? trimmed : undefined;
+}
+
+function normalizeFlatServerEntry(entry: UnknownRecord, raceIdFallback?: number): ServerInfo | null {
+  const serverId = toNumber(entry.serverId ?? entry.id ?? entry.value, 0);
+  const serverName =
+    toOptionalString(entry.serverName) ??
+    toOptionalString(entry.name) ??
+    toOptionalString(entry.label) ??
+    toOptionalString(entry.text) ??
+    "";
+  const raceId = toNumber(entry.raceId ?? raceIdFallback, 0) || undefined;
+
+  if (serverId <= 0 || !serverName) {
+    return null;
+  }
+
+  return {
+    raceId,
+    serverId,
+    serverName,
+  };
+}
+
+function flattenServerEntries(input: unknown, raceIdFallback?: number): ServerInfo[] {
+  if (!Array.isArray(input)) {
     return [];
   }
 
-  return list
-    .map((entry) => (entry && typeof entry === "object" ? (entry as UnknownRecord) : null))
-    .filter((entry): entry is UnknownRecord => Boolean(entry))
-    .map((entry) => ({
-      raceId: toNumber(entry.raceId, 0) || undefined,
-      serverId: toNumber(entry.serverId, 0),
-      serverName: String(entry.serverName ?? "").trim(),
-    }))
-    .filter((entry) => entry.serverId > 0 && entry.serverName.length > 0)
-    .sort((a, b) => a.serverId - b.serverId);
+  const items: ServerInfo[] = [];
+
+  for (const rawEntry of input) {
+    const entry = asRecord(rawEntry);
+    if (!entry) {
+      continue;
+    }
+
+    const children = Array.isArray(entry.children)
+      ? entry.children
+      : Array.isArray(entry.serverList)
+        ? entry.serverList
+        : Array.isArray(entry.servers)
+          ? entry.servers
+          : null;
+
+    if (children) {
+      const nextRaceId = toNumber(entry.raceId ?? entry.id ?? entry.value ?? raceIdFallback, 0) || raceIdFallback;
+      items.push(...flattenServerEntries(children, nextRaceId));
+      continue;
+    }
+
+    const normalized = normalizeFlatServerEntry(entry, raceIdFallback);
+    if (normalized) {
+      items.push(normalized);
+    }
+  }
+
+  return items;
+}
+
+function normalizeServers(payload: unknown): ServerInfo[] {
+  const root = asRecord(payload);
+  const candidates: unknown[] = [
+    payload,
+    root?.serverList,
+    root?.servers,
+    root?.list,
+    asRecord(root?.data)?.serverList,
+    asRecord(root?.data)?.servers,
+    asRecord(root?.data)?.list,
+    asRecord(root?.result)?.serverList,
+    asRecord(root?.result)?.servers,
+    asRecord(root?.result)?.list,
+  ];
+
+  const deduped = new Map<number, ServerInfo>();
+
+  for (const candidate of candidates) {
+    for (const item of flattenServerEntries(candidate)) {
+      if (!deduped.has(item.serverId)) {
+        deduped.set(item.serverId, item);
+      }
+    }
+  }
+
+  return Array.from(deduped.values()).sort((a, b) => a.serverId - b.serverId);
 }
 
 async function fetchPlayNcServers(): Promise<{ items: ServerInfo[]; source: string; warnings: string[] }> {
@@ -80,8 +163,8 @@ async function fetchPlayNcServers(): Promise<{ items: ServerInfo[]; source: stri
           continue;
         }
 
-        const payload = (await response.json()) as { serverList?: unknown };
-        const items = normalizeServers(payload.serverList);
+        const payload = (await response.json()) as UnknownRecord;
+        const items = normalizeServers(payload);
         if (items.length > 0) {
           return {
             items,
@@ -90,7 +173,9 @@ async function fetchPlayNcServers(): Promise<{ items: ServerInfo[]; source: stri
           };
         }
 
-        warnings.push(`${variant.source} ${url} -> empty serverList`);
+        warnings.push(
+          `${variant.source} ${url} -> empty normalized servers (${Object.keys(payload).slice(0, 8).join(",") || "no-keys"})`,
+        );
       } catch (error) {
         warnings.push(
           `${variant.source} ${url} -> ${error instanceof Error ? error.message : "unknown error"}`,
