@@ -8,6 +8,22 @@ export const preferredRegion = "icn1";
 
 type UnknownRecord = Record<string, unknown>;
 
+const FALLBACK_SERVERS: ServerInfo[] = [
+  { serverId: 1001, serverName: "시엘" },
+  { serverId: 1002, serverName: "네자칸" },
+  { serverId: 1003, serverName: "바이젤" },
+  { serverId: 1007, serverName: "프레기온" },
+  { serverId: 1008, serverName: "메스람타에다" },
+  { serverId: 1009, serverName: "히타니에" },
+  { serverId: 1011, serverName: "타하바타" },
+  { serverId: 1018, serverName: "코치룽" },
+  { serverId: 1021, serverName: "포에타" },
+  { serverId: 2001, serverName: "이스라펠" },
+  { serverId: 2002, serverName: "지켈" },
+  { serverId: 2003, serverName: "트리니엘" },
+  { serverId: 2013, serverName: "무닌" },
+];
+
 function toNumber(value: unknown, fallback = 0): number {
   if (typeof value === "number" && Number.isFinite(value)) {
     return value;
@@ -185,8 +201,8 @@ async function fetchPlayNcServers(): Promise<{ items: ServerInfo[]; source: stri
   }
 
   return {
-    items: [],
-    source: "plaync-unavailable",
+    items: FALLBACK_SERVERS,
+    source: "static-fallback",
     warnings,
   };
 }
@@ -202,13 +218,9 @@ export async function GET() {
     });
   }
 
-  return NextResponse.json(
-    {
-      source: result.source,
-      items: [],
-      error: "PlayNC 서버 목록 API 연결에 실패했습니다.",
-      warnings: result.warnings,
-    },
-    { status: 502 },
-  );
+  return NextResponse.json({
+    source: result.source,
+    items: FALLBACK_SERVERS,
+    warnings: [...result.warnings, "plaync servers unavailable; static fallback used"],
+  });
 }
