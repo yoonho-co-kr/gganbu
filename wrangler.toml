@@ -1,0 +1,3 @@
+name = "gganbu-plaync-proxy"
+main = "workers/plaync-detail-proxy.ts"
+compatibility_date = "2026-04-27"

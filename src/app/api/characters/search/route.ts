@@ -23,6 +23,8 @@ const PLAYNC_DETAIL_TIMEOUT_MS = 3_500;
 const PLAYNC_CLASS_MAP_TIMEOUT_MS = 1_500;
 const CLASS_ICON_BASE_URL = "https://assets.playnccdn.com/static-aion2/characters/img/class";
 const MAX_WARNING_COUNT = 8;
+const PLAYNC_DETAIL_PROXY_URL = process.env.PLAYNC_DETAIL_PROXY_URL?.trim() ?? "";
+const PLAYNC_DETAIL_PROXY_TOKEN = process.env.PLAYNC_DETAIL_PROXY_TOKEN?.trim() ?? "";
 const CLASS_KEY_ALIAS: Record<string, string> = {
   gladiator: "gladiator",
   templar: "templar",
@@ -271,6 +273,14 @@ function pushWarning(warnings: string[] | undefined, message: string) {
   warnings.push(message);
 }
 
+function appendSearchParams(url: string, params: URLSearchParams): string {
+  const resolved = new URL(url);
+  params.forEach((value, key) => {
+    resolved.searchParams.set(key, value);
+  });
+  return resolved.toString();
+}
+
 async function getPlayNcClassMap(): Promise<Map<number, ClassMeta>> {
   if (classMapCache && Date.now() - classMapCache.fetchedAt < CLASS_MAP_TTL_MS) {
     return classMapCache.byPcId;
@@ -474,12 +484,27 @@ async function fetchPlayNcCharacterDetail(characterId: string, serverId: number)
     label: string;
     baseUrl: string;
     headers?: HeadersInit;
-  }> = [
+  }> = [];
+
+  if (PLAYNC_DETAIL_PROXY_URL) {
+    requestVariants.push({
+      label: "proxy",
+      baseUrl: PLAYNC_DETAIL_PROXY_URL,
+      headers: PLAYNC_DETAIL_PROXY_TOKEN
+        ? {
+            "authorization": `Bearer ${PLAYNC_DETAIL_PROXY_TOKEN}`,
+            "x-proxy-token": PLAYNC_DETAIL_PROXY_TOKEN,
+          }
+        : undefined,
+    });
+  }
+
+  requestVariants.push(
     { label: "root-browser", baseUrl: "https://aion2.plaync.com/api/character/info", headers: browserHeaders },
     { label: "root-referer", baseUrl: "https://aion2.plaync.com/api/character/info", headers: refererHeaders },
     { label: "root-basic", baseUrl: "https://aion2.plaync.com/api/character/info" },
     { label: "locale-browser", baseUrl: "https://aion2.plaync.com/ko-kr/api/character/info", headers: browserHeaders },
-  ];
+  );
 
   let fallbackDetail: PlayNcCharacterDetail | null = null;
   let lastError: unknown = null;
@@ -495,7 +520,7 @@ async function fetchPlayNcCharacterDetail(characterId: string, serverId: number)
       });
 
       const payload = await fetchJson<UnknownRecord>(
-        `${variant.baseUrl}?${params.toString()}`,
+        appendSearchParams(variant.baseUrl, params),
         variant.headers ? { headers: variant.headers } : undefined,
         PLAYNC_DETAIL_TIMEOUT_MS,
       );
