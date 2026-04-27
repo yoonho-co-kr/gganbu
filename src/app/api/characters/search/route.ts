@@ -1,7 +1,7 @@
 import { load } from "cheerio";
 import { NextRequest, NextResponse } from "next/server";
 
-import type { CharacterSource, CharacterSummary } from "@/types/character";
+import type { CharacterSummary } from "@/types/character";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -15,13 +15,13 @@ type ClassMeta = {
 };
 
 const DEFAULT_PAGE_SIZE = 40;
-const DETAIL_ENRICH_LIMIT = 8;
+const DETAIL_ENRICH_LIMIT = 20;
 const DETAIL_BATCH_SIZE = 4;
 const CLASS_MAP_TTL_MS = 10 * 60 * 1000;
 const DETAIL_CACHE_TTL_MS = 60 * 1000;
-const AON2_SEARCH_TIMEOUT_MS = 2_500;
 const PLAYNC_SEARCH_TIMEOUT_MS = 4_000;
 const PLAYNC_DETAIL_TIMEOUT_MS = 1_800;
+const PLAYNC_PROFILE_PAGE_TIMEOUT_MS = 1_500;
 const PLAYNC_CLASS_MAP_TIMEOUT_MS = 1_500;
 const CLASS_ICON_BASE_URL = "https://assets.playnccdn.com/static-aion2/characters/img/class";
 const CLASS_KEY_ALIAS: Record<string, string> = {
@@ -258,6 +258,33 @@ async function fetchJson<T>(url: string, init?: RequestInit, timeoutMs = 8_000):
   }
 }
 
+async function fetchText(url: string, init?: RequestInit, timeoutMs = 8_000): Promise<string> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    const response = await fetch(url, {
+      ...init,
+      signal: controller.signal,
+      cache: "no-store",
+      headers: {
+        "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "user-agent":
+          "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+        ...(init?.headers ?? {}),
+      },
+    });
+
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status} from ${url}`);
+    }
+
+    return response.text();
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 async function getPlayNcClassMap(): Promise<Map<number, ClassMeta>> {
   if (classMapCache && Date.now() - classMapCache.fetchedAt < CLASS_MAP_TTL_MS) {
     return classMapCache.byPcId;
@@ -313,145 +340,6 @@ async function getPlayNcClassMap(): Promise<Map<number, ClassMeta>> {
     byPcId: resolved,
   };
   return resolved;
-}
-
-function normalizeAon2Payload(payload: unknown): CharacterSummary[] {
-  const root = payload as UnknownRecord | undefined;
-  const candidates = [
-    payload,
-    root?.list,
-    root?.items,
-    root?.characters,
-    (root?.data as UnknownRecord | undefined)?.list,
-    (root?.data as UnknownRecord | undefined)?.items,
-    (root?.data as UnknownRecord | undefined)?.characters,
-    (root?.result as UnknownRecord | undefined)?.list,
-    (root?.result as UnknownRecord | undefined)?.items,
-    (root?.result as UnknownRecord | undefined)?.characters,
-    root?.data,
-  ];
-
-  for (const candidate of candidates) {
-    if (!Array.isArray(candidate)) {
-      continue;
-    }
-
-    const mapped: CharacterSummary[] = [];
-
-    for (const item of candidate) {
-      const record = item as UnknownRecord;
-      const stats = asRecord(record.stats) ?? asRecord(record.stat) ?? {};
-
-      const characterId = normalizeCharacterId(record.characterId ?? record.id ?? record.character_id);
-      const rawName = sanitizeName(record.name ?? record.characterName);
-      const serverRecord = asRecord(record.server) ?? {};
-      const serverId = toNumber(record.serverId ?? record.server_id ?? serverRecord.id);
-      const serverName = String(record.serverName ?? record.server_name ?? serverRecord.name ?? record.server ?? "").trim();
-
-      if (!characterId || !rawName || !serverId || !serverName) {
-        continue;
-      }
-
-      const raceValue = toNumber(record.race || record.raceId || 0);
-      const classId = toNumber(record.classId ?? record.pcId ?? record.jobId ?? record.job_id);
-      const className =
-        toOptionalString(record.className) ??
-        toOptionalString(record.classText) ??
-        toOptionalString(record.jobName) ??
-        toOptionalString(record.job);
-      const classKey = deriveClassKey(record.classKey, record.className, record.classText, record.jobName, record.job);
-      const itemLevel = pickPositiveNumberFromValues([
-        record.totalItemLevel,
-        record.itemLevel,
-        record.itemLv,
-        record.item_level,
-        record.total_item_level,
-        record.equipmentItemLevel,
-        record.equipment_item_level,
-        record.ncItemLevel,
-        record.nc_item_level,
-        stats.totalItemLevel,
-        stats.itemLevel,
-        stats.itemLv,
-        stats.item_level,
-      ]);
-      const combatPower = pickPositiveNumberFromValues([
-        record.maxCombatPower,
-        record.combatPower,
-        record.battlePower,
-        record.totalCombatPower,
-        record.maxBattlePower,
-        record.ncCombatPower,
-        record.nc_combat_power,
-        record.combat_power,
-        record.power,
-        record.cp,
-        stats.maxCombatPower,
-        stats.combatPower,
-        stats.battlePower,
-        stats.combat_power,
-        stats.ncCombatPower,
-        stats.nc_combat_power,
-        stats.cp,
-      ]);
-
-      mapped.push({
-        id: `${serverId}:${characterId}`,
-        characterId,
-        name: rawName,
-        serverId,
-        serverName,
-        level: toNumber(record.level),
-        race: raceValue > 0 ? raceValue : undefined,
-        classId: classId || undefined,
-        className,
-        classKey,
-        classIconUrl: toClassIconUrl(classKey),
-        itemLevel,
-        combatPower,
-        profileImageUrl: toAbsoluteProfileUrl(record.profileImageUrl ?? record.profileImage),
-        source: "aon2-api" as CharacterSource,
-      });
-    }
-
-    if (mapped.length > 0) {
-      return mapped;
-    }
-  }
-
-  return [];
-}
-
-async function searchWithAon2Api(name: string, serverId?: number, size = DEFAULT_PAGE_SIZE) {
-  const queryVariants: Array<Record<string, string>> = [
-    { keyword: name },
-    { name },
-    { q: name },
-  ];
-
-  for (const variant of queryVariants) {
-    const params = new URLSearchParams(variant);
-    params.set("size", String(size));
-    if (serverId) {
-      params.set("serverId", String(serverId));
-    }
-
-    try {
-      const payload = await fetchJson<unknown>(
-        `https://api.aon2.info/api/v1/aion2/characters/search-by-name?${params.toString()}`,
-        undefined,
-        AON2_SEARCH_TIMEOUT_MS,
-      );
-      const normalized = normalizeAon2Payload(payload);
-      if (normalized.length > 0) {
-        return normalized;
-      }
-    } catch {
-      // Keep trying other query param names.
-    }
-  }
-
-  return [];
 }
 
 function mapPlayNcSearchItem(item: UnknownRecord, classMap: Map<number, ClassMeta>): CharacterSummary | null {
@@ -572,6 +460,65 @@ function detailCacheKey(characterId: string, serverId: number) {
   return `${serverId}:${normalizeCharacterId(characterId)}`;
 }
 
+function mergePlayNcCharacterDetail(
+  base: PlayNcCharacterDetail | null,
+  fallback: PlayNcCharacterDetail,
+): PlayNcCharacterDetail {
+  return {
+    itemLevel: base?.itemLevel && base.itemLevel > 0 ? base.itemLevel : fallback.itemLevel,
+    combatPower: base?.combatPower && base.combatPower > 0 ? base.combatPower : fallback.combatPower,
+    profileImageUrl: base?.profileImageUrl ?? fallback.profileImageUrl,
+    classId: base?.classId ?? fallback.classId,
+    className: base?.className ?? fallback.className,
+    classKey: base?.classKey ?? fallback.classKey,
+    classIconUrl: base?.classIconUrl ?? fallback.classIconUrl,
+  };
+}
+
+function pickNumberBySelectors($: ReturnType<typeof load>, selectors: string[]): number {
+  for (const selector of selectors) {
+    const value = toNumber($(selector).first().text());
+    if (value > 0) {
+      return value;
+    }
+  }
+  return 0;
+}
+
+async function fetchPlayNcProfilePageDetail(characterId: string, serverId: number): Promise<PlayNcCharacterDetail | null> {
+  const normalizedCharacterId = normalizeCharacterId(characterId);
+  if (!normalizedCharacterId || !serverId) {
+    return null;
+  }
+
+  const encodedCharacterId = encodeURIComponent(normalizedCharacterId);
+  const html = await fetchText(
+    `https://aion2.plaync.com/ko-kr/characters/${serverId}/${encodedCharacterId}`,
+    undefined,
+    PLAYNC_PROFILE_PAGE_TIMEOUT_MS,
+  );
+  const $ = load(html);
+  const itemLevel = pickNumberBySelectors($, [
+    ".profile__info-item-level",
+    "[class*='profile__info-item-level']",
+  ]);
+  const combatPower = pickNumberBySelectors($, [
+    ".profile__info-power-level",
+    "[class*='profile__info-power-level']",
+  ]);
+
+  if (itemLevel <= 0 && combatPower <= 0) {
+    return null;
+  }
+
+  return {
+    itemLevel,
+    combatPower,
+    profileImageUrl: null,
+    classIconUrl: null,
+  };
+}
+
 async function fetchPlayNcCharacterDetail(characterId: string, serverId: number): Promise<PlayNcCharacterDetail> {
   const normalizedCharacterId = normalizeCharacterId(characterId);
   const cacheKey = detailCacheKey(normalizedCharacterId, serverId);
@@ -616,6 +563,17 @@ async function fetchPlayNcCharacterDetail(characterId: string, serverId: number)
         }
       }
     }
+  }
+
+  try {
+    const pageDetail = await fetchPlayNcProfilePageDetail(normalizedCharacterId, serverId);
+    if (pageDetail) {
+      const detail = mergePlayNcCharacterDetail(fallbackDetail, pageDetail);
+      detailCache.set(cacheKey, { fetchedAt: Date.now(), detail });
+      return detail;
+    }
+  } catch {
+    // The profile page renders these nodes client-side in some responses, so this is only a best-effort fallback.
   }
 
   if (fallbackDetail) {
@@ -909,28 +867,6 @@ export async function GET(request: NextRequest) {
   const size = Math.min(Math.max(toNumber(sizeRaw, DEFAULT_PAGE_SIZE), 1), DEFAULT_PAGE_SIZE);
 
   const warnings: string[] = [];
-
-  try {
-    const aon2 = await searchWithAon2Api(name, serverId, size);
-    if (aon2.length > 0) {
-      let enriched = aon2;
-      try {
-        const classMap = await getPlayNcClassMap();
-        enriched = await enrichMissingStatsFromPlayNcDetail(aon2, classMap);
-      } catch (error) {
-        warnings.push(`plaync detail enrich on aon2 error: ${error instanceof Error ? error.message : "unknown"}`);
-      }
-
-      return NextResponse.json({
-        source: "aon2-api",
-        items: enriched,
-        warnings,
-      });
-    }
-    warnings.push("aon2 api no result");
-  } catch (error) {
-    warnings.push(`aon2 api error: ${error instanceof Error ? error.message : "unknown"}`);
-  }
 
   try {
     const playncApi = await searchWithPlayNcApi(name, serverId, size);
