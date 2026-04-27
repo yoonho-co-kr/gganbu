@@ -436,16 +436,29 @@ async function fetchPlayNcSearchSummaryByName(name: string, serverId: number): P
 function hasMeaningfulDetailPayload(infoPayload: UnknownRecord, equipmentPayload: UnknownRecord): boolean {
   const profile = asRecord(infoPayload.profile) ?? {};
   const stat = asRecord(infoPayload.stat) ?? {};
-  const statList = asArray(stat.statList);
+  const statList = asArray(stat.statList).filter((entry): entry is UnknownRecord => Boolean(asRecord(entry)));
   const equipmentRoot = asRecord(equipmentPayload.equipment) ?? {};
   const skillRoot = asRecord(equipmentPayload.skill) ?? {};
   const equipmentList = asArray(equipmentRoot.equipmentList);
   const skillList = asArray(skillRoot.skillList);
+  const itemLevel = pickItemLevel(statList, profile);
+  const combatPower = pickCombatPower(profile);
+  const hasItemLevelSignal = statList.some((entry) => {
+    const type = String(entry.type ?? "").toLowerCase();
+    const name = String(entry.name ?? "");
+    return /item[_-]?level/.test(type) || name.includes("아이템레벨");
+  });
+  const hasCombatPowerSignal = statList.some((entry) => {
+    const type = String(entry.type ?? "").toLowerCase();
+    const name = String(entry.name ?? "");
+    return /combat|battle/.test(type) || name.includes("전투력");
+  });
 
   return Boolean(
-    toOptionalString(profile.characterName) ||
-      toNumber(profile.combatPower, 0) > 0 ||
-      statList.length > 0 ||
+    itemLevel > 0 ||
+      combatPower > 0 ||
+      hasItemLevelSignal ||
+      hasCombatPowerSignal ||
       equipmentList.length > 0 ||
       skillList.length > 0,
   );
@@ -473,8 +486,12 @@ function mapEquipmentList(list: unknown): EquipmentItem[] {
 }
 
 function pickItemLevel(statList: UnknownRecord[], profile: UnknownRecord): number {
-  const itemLevelStat = statList.find((entry) => String(entry.name ?? "").includes("아이템레벨"));
-  return toNumber(itemLevelStat?.value, toNumber(profile.itemLevel, 0));
+  const itemLevelStat = statList.find((entry) => {
+    const type = String(entry.type ?? "").toLowerCase();
+    const name = String(entry.name ?? "");
+    return /item[_-]?level/.test(type) || name.includes("아이템레벨");
+  });
+  return toNumber(itemLevelStat?.value, toNumber(profile.itemLevel ?? profile.totalItemLevel, 0));
 }
 
 function pickCombatPower(profile: UnknownRecord): number {
@@ -598,37 +615,45 @@ async function fetchA2ToolCharacterByName(
   }
 
   const referer = `https://aion2tool.com/char/serverid=${serverId}/${encodeURIComponent(name)}`;
+  const requestVariants: Array<HeadersInit> = [
+    {
+      "content-type": "application/json",
+      origin: "https://aion2tool.com",
+      referer,
+    },
+    {
+      "content-type": "application/json",
+    },
+  ];
 
   for (const race of raceCandidates) {
-    try {
-      const payload = await fetchA2ToolJson<A2ToolSearchPayload>(
-        "https://aion2tool.com/api/character/search",
-        {
-          method: "POST",
-          headers: {
-            "content-type": "application/json",
-            origin: "https://aion2tool.com",
-            referer,
+    for (const headers of requestVariants) {
+      try {
+        const payload = await fetchA2ToolJson<A2ToolSearchPayload>(
+          "https://aion2tool.com/api/character/search",
+          {
+            method: "POST",
+            headers,
+            body: JSON.stringify({
+              race,
+              server_id: serverId,
+              keyword: name,
+            }),
           },
-          body: JSON.stringify({
-            race,
-            server_id: serverId,
-            keyword: name,
-          }),
-        },
-        12_000,
-      );
+          12_000,
+        );
 
-      if (!payload.success || !payload.data) {
-        continue;
-      }
+        if (!payload.success || !payload.data) {
+          continue;
+        }
 
-      const data = asRecord(payload.data);
-      if (data) {
-        return data;
+        const data = asRecord(payload.data);
+        if (data) {
+          return data;
+        }
+      } catch {
+        // Try the next header/race candidate.
       }
-    } catch {
-      // Try the next race candidate.
     }
   }
 
@@ -830,7 +855,6 @@ export async function GET(request: NextRequest) {
                 lang,
                 characterId: normalizedTargetCharacterId,
                 serverId: String(serverId),
-                t: String(Date.now() + retry),
               });
 
               const infoUrl = `https://aion2.plaync.com/api/character/info?${params.toString()}`;
@@ -888,6 +912,24 @@ export async function GET(request: NextRequest) {
       detailPayload = await fetchDetailPayload(normalizedResolvedByName);
       resolvedCharacterId = normalizedResolvedByName;
       warnings.push("characterId fallback by name");
+    }
+
+    if (!hasMeaningfulDetailPayload(detailPayload.infoPayload, detailPayload.equipmentPayload) && characterNameRaw) {
+      const resolvedByName = await resolveCharacterIdByName(characterNameRaw, serverId).catch(() => null);
+      const normalizedResolvedByName = normalizeCharacterId(resolvedByName);
+
+      if (normalizedResolvedByName && normalizedResolvedByName !== resolvedCharacterId) {
+        try {
+          const retryPayload = await fetchDetailPayload(normalizedResolvedByName);
+          if (hasMeaningfulDetailPayload(retryPayload.infoPayload, retryPayload.equipmentPayload)) {
+            detailPayload = retryPayload;
+            resolvedCharacterId = normalizedResolvedByName;
+            warnings.push("characterId fallback by name");
+          }
+        } catch {
+          // Keep using the original payload and downstream fallbacks.
+        }
+      }
     }
 
     const { infoPayload, equipmentPayload } = detailPayload;

@@ -256,52 +256,60 @@ async function fetchA2ToolCharacterSnapshot(
   }
 
   const referer = `https://aion2tool.com/char/serverid=${serverId}/${encodeURIComponent(name)}`;
+  const requestVariants: Array<HeadersInit> = [
+    {
+      "content-type": "application/json",
+      origin: "https://aion2tool.com",
+      referer,
+    },
+    {
+      "content-type": "application/json",
+    },
+  ];
 
   for (const race of raceCandidates) {
-    try {
-      const payload = await fetchJson<A2ToolSearchPayload>(
-        "https://aion2tool.com/api/character/search",
-        {
-          method: "POST",
-          headers: {
-            "content-type": "application/json",
-            origin: "https://aion2tool.com",
-            referer,
+    for (const headers of requestVariants) {
+      try {
+        const payload = await fetchJson<A2ToolSearchPayload>(
+          "https://aion2tool.com/api/character/search",
+          {
+            method: "POST",
+            headers,
+            body: JSON.stringify({
+              race,
+              server_id: serverId,
+              keyword: name,
+            }),
           },
-          body: JSON.stringify({
-            race,
-            server_id: serverId,
-            keyword: name,
-          }),
-        },
-        10_000,
-      );
+          10_000,
+        );
 
-      if (!payload.success || !payload.data) {
-        continue;
+        if (!payload.success || !payload.data) {
+          continue;
+        }
+
+        const data = asRecord(payload.data);
+        if (!data) {
+          continue;
+        }
+
+        const className = toOptionalString(data.job);
+        const classKey = deriveClassKey(className, parseClassKeyFromIconUrl(data.job_image_url));
+        return {
+          className,
+          classKey,
+          classIconUrl: toClassIconUrl(classKey),
+          itemLevel: pickA2ToolItemLevel(data),
+          combatPower: pickPositiveNumberFromValues([
+            data.nc_combat_power,
+            data.combat_power,
+            data.combatPower,
+            data.maxCombatPower,
+          ]),
+        };
+      } catch {
+        // Try next header/race candidate.
       }
-
-      const data = asRecord(payload.data);
-      if (!data) {
-        continue;
-      }
-
-      const className = toOptionalString(data.job);
-      const classKey = deriveClassKey(className, parseClassKeyFromIconUrl(data.job_image_url));
-      return {
-        className,
-        classKey,
-        classIconUrl: toClassIconUrl(classKey),
-        itemLevel: pickA2ToolItemLevel(data),
-        combatPower: pickPositiveNumberFromValues([
-          data.nc_combat_power,
-          data.combat_power,
-          data.combatPower,
-          data.maxCombatPower,
-        ]),
-      };
-    } catch {
-      // Try next race candidate.
     }
   }
 
@@ -537,107 +545,40 @@ function mapPlayNcSearchItem(item: UnknownRecord, classMap: Map<number, ClassMet
   };
 }
 
-async function fetchPlayNcCharacterDetail(characterId: string, serverId: number) {
-  const normalizedCharacterId = normalizeCharacterId(characterId);
-  const referer = `https://aion2.plaync.com/ko-kr/characters/${serverId}/${encodeURIComponent(normalizedCharacterId)}`;
-  const languages = ["ko-kr", "ko"];
-  const headerVariants: Array<HeadersInit | undefined> = [
-    {
-      origin: "https://aion2.plaync.com",
-      referer,
-    },
-    undefined,
-  ];
-  let detail: UnknownRecord | null = null;
+type PlayNcDetailSnapshot = {
+  itemLevel: number;
+  combatPower: number;
+  profileImageUrl: string | null;
+  classId?: number;
+  className?: string;
+  classKey?: string;
+  classIconUrl: string | null;
+  hasItemLevelSignal: boolean;
+  hasCombatPowerSignal: boolean;
+};
 
-  for (let retry = 0; retry < 3; retry += 1) {
-    for (const lang of languages) {
-      for (const extraHeaders of headerVariants) {
-        try {
-          const params = new URLSearchParams({
-            lang,
-            characterId: normalizedCharacterId,
-            serverId: String(serverId),
-            t: String(Date.now() + retry),
-          });
+function isItemLevelStatEntry(entry: UnknownRecord): boolean {
+  const type = String(entry.type ?? "").toLowerCase();
+  const name = String(entry.name ?? "");
+  return /item[_-]?level/.test(type) || name.includes("아이템레벨");
+}
 
-          const payload = await fetchJson<UnknownRecord>(
-            `https://aion2.plaync.com/api/character/info?${params.toString()}`,
-            {
-              headers: extraHeaders,
-            },
-          );
+function isCombatPowerStatEntry(entry: UnknownRecord): boolean {
+  const type = String(entry.type ?? "").toLowerCase();
+  const name = String(entry.name ?? "");
+  return /combat|battle/.test(type) || name.includes("전투력");
+}
 
-          const profile = asRecord(payload.profile) ?? {};
-          const statRoot = asRecord(payload.stat) ?? {};
-          const statList = asArray(statRoot.statList);
-          const hasData =
-            toOptionalString(profile.characterName) !== undefined ||
-            toNumber(profile.combatPower, 0) > 0 ||
-            statList.length > 0;
-
-          detail = payload;
-          if (hasData) {
-            break;
-          }
-        } catch {
-          // Keep trying additional combinations.
-        }
-      }
-
-      if (detail) {
-        const profile = asRecord(detail.profile) ?? {};
-        const statRoot = asRecord(detail.stat) ?? {};
-        const statList = asArray(statRoot.statList);
-        const hasData =
-          toOptionalString(profile.characterName) !== undefined ||
-          toNumber(profile.combatPower, 0) > 0 ||
-          statList.length > 0;
-        if (hasData) {
-          break;
-        }
-      }
-    }
-
-    if (detail) {
-      const profile = asRecord(detail.profile) ?? {};
-      const statRoot = asRecord(detail.stat) ?? {};
-      const statList = asArray(statRoot.statList);
-      const hasData =
-        toOptionalString(profile.characterName) !== undefined ||
-        toNumber(profile.combatPower, 0) > 0 ||
-        statList.length > 0;
-      if (hasData) {
-        break;
-      }
-    }
-
-    if (retry < 2) {
-      await sleep(150 * (retry + 1));
-    }
-  }
-
-  if (!detail) {
-    throw new Error("plaync info empty");
-  }
-
-  const statList =
-    ((detail.stat as UnknownRecord | undefined)?.statList as UnknownRecord[] | undefined) ?? [];
-  const itemLevelEntry = statList.find((entry) => {
-    const type = String(entry.type ?? "").toLowerCase();
-    const name = String(entry.name ?? "");
-    return /item[_-]?level/.test(type) || name.includes("아이템레벨");
-  });
-  const combatPowerEntry = statList.find((entry) => {
-    const type = String(entry.type ?? "").toLowerCase();
-    const name = String(entry.name ?? "");
-    return /combat|battle/.test(type) || name.includes("전투력");
-  });
-
-  const profile = (detail.profile as UnknownRecord | undefined) ?? {};
+function extractPlayNcDetailSnapshot(detail: UnknownRecord): PlayNcDetailSnapshot {
+  const profile = asRecord(detail.profile) ?? {};
+  const detailStat = asRecord(detail.stat) ?? {};
+  const statList = asArray(detailStat.statList)
+    .map((entry) => asRecord(entry))
+    .filter((entry): entry is UnknownRecord => Boolean(entry));
+  const itemLevelEntry = statList.find((entry) => isItemLevelStatEntry(entry));
+  const combatPowerEntry = statList.find((entry) => isCombatPowerStatEntry(entry));
   const classId = toNumber(profile.pcId);
   const classKey = deriveClassKey(profile.className);
-  const detailStat = asRecord(detail.stat) ?? {};
 
   return {
     itemLevel: pickPositiveNumberFromValues([
@@ -666,6 +607,99 @@ async function fetchPlayNcCharacterDetail(characterId: string, serverId: number)
     className: toOptionalString(profile.className),
     classKey,
     classIconUrl: toClassIconUrl(classKey),
+    hasItemLevelSignal: Boolean(itemLevelEntry),
+    hasCombatPowerSignal: Boolean(combatPowerEntry),
+  };
+}
+
+function hasMeaningfulPlayNcDetailSnapshot(snapshot: PlayNcDetailSnapshot): boolean {
+  return (
+    snapshot.itemLevel > 0 ||
+    snapshot.combatPower > 0 ||
+    snapshot.hasItemLevelSignal ||
+    snapshot.hasCombatPowerSignal
+  );
+}
+
+async function fetchPlayNcCharacterDetail(characterId: string, serverId: number) {
+  const normalizedCharacterId = normalizeCharacterId(characterId);
+  const referer = `https://aion2.plaync.com/ko-kr/characters/${serverId}/${encodeURIComponent(normalizedCharacterId)}`;
+  const languages = ["ko-kr", "ko"];
+  const headerVariants: Array<HeadersInit | undefined> = [
+    {
+      origin: "https://aion2.plaync.com",
+      referer,
+    },
+    undefined,
+  ];
+  let detail: UnknownRecord | null = null;
+
+  for (let retry = 0; retry < 3; retry += 1) {
+    for (const lang of languages) {
+      for (const extraHeaders of headerVariants) {
+        try {
+          const params = new URLSearchParams({
+            lang,
+            characterId: normalizedCharacterId,
+            serverId: String(serverId),
+          });
+
+          const payload = await fetchJson<UnknownRecord>(
+            `https://aion2.plaync.com/api/character/info?${params.toString()}`,
+            {
+              headers: extraHeaders,
+            },
+          );
+
+          const snapshot = extractPlayNcDetailSnapshot(payload);
+          const hasData = hasMeaningfulPlayNcDetailSnapshot(snapshot);
+
+          detail = payload;
+          if (hasData) {
+            break;
+          }
+        } catch {
+          // Keep trying additional combinations.
+        }
+      }
+
+      if (detail) {
+        const hasData = hasMeaningfulPlayNcDetailSnapshot(extractPlayNcDetailSnapshot(detail));
+        if (hasData) {
+          break;
+        }
+      }
+    }
+
+    if (detail) {
+      const hasData = hasMeaningfulPlayNcDetailSnapshot(extractPlayNcDetailSnapshot(detail));
+      if (hasData) {
+        break;
+      }
+    }
+
+    if (retry < 2) {
+      await sleep(150 * (retry + 1));
+    }
+  }
+
+  if (!detail) {
+    throw new Error("plaync info empty");
+  }
+
+  const snapshot = extractPlayNcDetailSnapshot(detail);
+  if (!hasMeaningfulPlayNcDetailSnapshot(snapshot)) {
+    throw new Error("plaync info missing stats");
+  }
+
+  return {
+    itemLevel: snapshot.itemLevel,
+    combatPower: snapshot.combatPower,
+    profileImageUrl: snapshot.profileImageUrl,
+    classId: snapshot.classId,
+    className: snapshot.className,
+    classKey: snapshot.classKey,
+    classIconUrl: snapshot.classIconUrl,
   };
 }
 
