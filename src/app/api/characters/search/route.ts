@@ -27,9 +27,10 @@ type A2ToolCharacterSnapshot = {
 };
 
 const DEFAULT_PAGE_SIZE = 40;
-const DETAIL_BATCH_SIZE = 5;
+const DETAIL_BATCH_SIZE = 2;
 const A2TOOL_ENRICH_LIMIT = 12;
 const CLASS_MAP_TTL_MS = 10 * 60 * 1000;
+const DETAIL_CACHE_TTL_MS = 60 * 1000;
 const CLASS_ICON_BASE_URL = "https://assets.playnccdn.com/static-aion2/characters/img/class";
 const CLASS_KEY_ALIAS: Record<string, string> = {
   gladiator: "gladiator",
@@ -56,6 +57,22 @@ let classMapCache:
       byPcId: Map<number, ClassMeta>;
     }
   | null = null;
+
+let detailCache = new Map<
+  string,
+  {
+    fetchedAt: number;
+    detail: {
+      itemLevel: number;
+      combatPower: number;
+      profileImageUrl: string | null;
+      classId?: number;
+      className?: string;
+      classKey?: string;
+      classIconUrl: string | null;
+    };
+  }
+>();
 
 function sanitizeName(value: unknown): string {
   if (typeof value !== "string") {
@@ -160,7 +177,10 @@ function toOptionalString(value: unknown): string | undefined {
     return undefined;
   }
   const trimmed = value.trim();
-  return trimmed.length > 0 ? trimmed : undefined;
+  if (!trimmed || trimmed === "undefined" || trimmed === "$undefined" || trimmed === "null") {
+    return undefined;
+  }
+  return trimmed;
 }
 
 function normalizeClassKey(value: unknown): string | undefined {
@@ -439,6 +459,16 @@ type PlayNcDetailSnapshot = {
   hasCombatPowerSignal: boolean;
 };
 
+type PlayNcCharacterDetail = {
+  itemLevel: number;
+  combatPower: number;
+  profileImageUrl: string | null;
+  classId?: number;
+  className?: string;
+  classKey?: string;
+  classIconUrl: string | null;
+};
+
 function preferExistingPositiveValue(currentValue: number, nextValue: number): number {
   if (currentValue > 0) {
     return currentValue;
@@ -513,16 +543,32 @@ function hasMeaningfulPlayNcDetailSnapshot(snapshot: PlayNcDetailSnapshot): bool
   );
 }
 
-async function fetchPlayNcCharacterDetail(characterId: string, serverId: number) {
+function getDetailCacheKey(characterId: string, serverId: number): string {
+  return `${serverId}:${normalizeCharacterId(characterId)}`;
+}
+
+async function fetchPlayNcCharacterDetail(
+  characterId: string,
+  serverId: number,
+  options?: { forceRefresh?: boolean },
+): Promise<PlayNcCharacterDetail> {
   const normalizedCharacterId = normalizeCharacterId(characterId);
+  const cacheKey = getDetailCacheKey(normalizedCharacterId, serverId);
+  const forceRefresh = options?.forceRefresh ?? false;
+  const cached = detailCache.get(cacheKey);
+
+  if (!forceRefresh && cached && Date.now() - cached.fetchedAt < DETAIL_CACHE_TTL_MS) {
+    return cached.detail;
+  }
+
   const referer = `https://aion2.plaync.com/ko-kr/characters/${serverId}/${encodeURIComponent(normalizedCharacterId)}`;
   const languages = ["ko-kr", "ko"];
   const headerVariants: Array<HeadersInit | undefined> = [
+    undefined,
     {
       origin: "https://aion2.plaync.com",
       referer,
     },
-    undefined,
   ];
   let detail: UnknownRecord | null = null;
 
@@ -584,7 +630,7 @@ async function fetchPlayNcCharacterDetail(characterId: string, serverId: number)
     throw new Error("plaync info missing stats");
   }
 
-  return {
+  const resolvedDetail = {
     itemLevel: snapshot.itemLevel,
     combatPower: snapshot.combatPower,
     profileImageUrl: snapshot.profileImageUrl,
@@ -593,12 +639,20 @@ async function fetchPlayNcCharacterDetail(characterId: string, serverId: number)
     classKey: snapshot.classKey,
     classIconUrl: snapshot.classIconUrl,
   };
+
+  detailCache.set(cacheKey, {
+    fetchedAt: Date.now(),
+    detail: resolvedDetail,
+  });
+
+  return resolvedDetail;
 }
 
 async function enrichPlayNcCharacters(
   characters: CharacterSummary[],
   classMap: Map<number, ClassMeta>,
   limit = characters.length,
+  options?: { forceRefresh?: boolean },
 ): Promise<CharacterSummary[]> {
   const base = [...characters];
   const target = base.slice(0, Math.max(0, limit));
@@ -610,7 +664,7 @@ async function enrichPlayNcCharacters(
     const results = await Promise.all(
       batch.map(async (character) => {
         try {
-          const detail = await fetchPlayNcCharacterDetail(character.characterId, character.serverId);
+          const detail = await fetchPlayNcCharacterDetail(character.characterId, character.serverId, options);
           return { character, detail };
         } catch {
           return null;
@@ -647,12 +701,36 @@ async function enrichPlayNcCharacters(
     }
   }
 
+  const missingStats = target.filter((character) => character.itemLevel <= 0 || character.combatPower <= 0);
+  for (const character of missingStats) {
+    try {
+      const detail = await fetchPlayNcCharacterDetail(character.characterId, character.serverId, {
+        forceRefresh: true,
+      });
+      const entry = byId.get(character.id);
+      if (!entry) {
+        continue;
+      }
+
+      entry.itemLevel = preferExistingPositiveValue(entry.itemLevel, detail.itemLevel);
+      entry.combatPower = preferExistingPositiveValue(entry.combatPower, detail.combatPower);
+      entry.profileImageUrl = detail.profileImageUrl ?? entry.profileImageUrl;
+      entry.classId = detail.classId ?? entry.classId;
+      entry.className = detail.className ?? entry.className;
+      entry.classKey = detail.classKey ?? entry.classKey;
+      entry.classIconUrl = detail.classIconUrl ?? entry.classIconUrl;
+    } catch {
+      // Ignore and return the best effort result.
+    }
+  }
+
   return base;
 }
 
 async function enrichMissingStatsFromPlayNcDetail(
   characters: CharacterSummary[],
   classMap: Map<number, ClassMeta>,
+  options?: { forceRefresh?: boolean },
 ): Promise<CharacterSummary[]> {
   const base = [...characters];
   const byId = new Map(base.map((character) => [character.id, character]));
@@ -666,7 +744,7 @@ async function enrichMissingStatsFromPlayNcDetail(
     const results = await Promise.all(
       batch.map(async (character) => {
         try {
-          const detail = await fetchPlayNcCharacterDetail(character.characterId, character.serverId);
+          const detail = await fetchPlayNcCharacterDetail(character.characterId, character.serverId, options);
           return { character, detail };
         } catch {
           return null;
@@ -783,7 +861,12 @@ async function enrichMissingStatsFromA2Tool(characters: CharacterSummary[]): Pro
   return base;
 }
 
-async function searchWithPlayNcApi(name: string, serverId?: number, size = DEFAULT_PAGE_SIZE) {
+async function searchWithPlayNcApi(
+  name: string,
+  serverId?: number,
+  size = DEFAULT_PAGE_SIZE,
+  options?: { forceRefresh?: boolean },
+) {
   const params = new URLSearchParams({
     keyword: name,
     page: "0",
@@ -808,7 +891,7 @@ async function searchWithPlayNcApi(name: string, serverId?: number, size = DEFAU
     return [];
   }
 
-  return enrichPlayNcCharacters(mapped, classMap, size);
+  return enrichPlayNcCharacters(mapped, classMap, size, options);
 }
 
 async function searchWithPlayNcScrape(name: string, serverId?: number): Promise<CharacterSummary[]> {
@@ -918,6 +1001,7 @@ export async function GET(request: NextRequest) {
   const name = request.nextUrl.searchParams.get("name")?.trim() ?? "";
   const serverIdRaw = request.nextUrl.searchParams.get("serverId")?.trim() ?? "";
   const sizeRaw = request.nextUrl.searchParams.get("size")?.trim() ?? "";
+  const refreshRaw = request.nextUrl.searchParams.get("refresh")?.trim() ?? "";
 
   if (!name) {
     return NextResponse.json({ error: "name 파라미터가 필요합니다." }, { status: 400 });
@@ -925,11 +1009,12 @@ export async function GET(request: NextRequest) {
 
   const serverId = serverIdRaw ? toNumber(serverIdRaw, 0) || undefined : undefined;
   const size = Math.min(Math.max(toNumber(sizeRaw, DEFAULT_PAGE_SIZE), 1), DEFAULT_PAGE_SIZE);
+  const forceRefresh = refreshRaw === "1" || refreshRaw.toLowerCase() === "true";
 
   const warnings: string[] = [];
 
   try {
-    const playncApi = await searchWithPlayNcApi(name, serverId, size);
+    const playncApi = await searchWithPlayNcApi(name, serverId, size, { forceRefresh });
     if (playncApi.length > 0) {
       return NextResponse.json({
         source: "plaync-api",
@@ -948,7 +1033,7 @@ export async function GET(request: NextRequest) {
       let enriched = scraped;
       try {
         const classMap = await getPlayNcClassMap();
-        enriched = await enrichMissingStatsFromPlayNcDetail(scraped, classMap);
+        enriched = await enrichMissingStatsFromPlayNcDetail(scraped, classMap, { forceRefresh });
       } catch (error) {
         warnings.push(`plaync detail enrich on scrape error: ${error instanceof Error ? error.message : "unknown"}`);
       }
