@@ -529,8 +529,17 @@ async function fetchPlayNcCharacterDetail(characterId: string, serverId: number)
   }
 
   const languages = ["ko-kr"];
+  const detailReferer = `https://aion2.plaync.com/ko-kr/characters/${serverId}/${encodeURIComponent(normalizedCharacterId)}`;
   const headerVariants: Array<HeadersInit | undefined> = [
-    undefined,
+    {
+      "accept-language": "ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7",
+      "origin": "https://aion2.plaync.com",
+      "referer": detailReferer,
+      "x-requested-with": "XMLHttpRequest",
+      "sec-fetch-dest": "empty",
+      "sec-fetch-mode": "cors",
+      "sec-fetch-site": "same-origin",
+    },
   ];
 
   let fallbackDetail: PlayNcCharacterDetail | null = null;
@@ -544,6 +553,7 @@ async function fetchPlayNcCharacterDetail(characterId: string, serverId: number)
             lang,
             characterId: normalizedCharacterId,
             serverId: String(serverId),
+            t: String(Date.now()),
           });
 
           const payload = await fetchJson<UnknownRecord>(
