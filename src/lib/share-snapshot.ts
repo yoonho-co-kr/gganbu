@@ -2,7 +2,7 @@ import type { CharacterSource, CharacterSummary } from "@/types/character";
 import type { PartySnapshot, ShareSnapshot } from "@/types/share";
 
 const SLOT_COUNT = 8;
-const VALID_SOURCES: CharacterSource[] = ["plaync-api", "plaync-scrape"];
+const VALID_SOURCES: CharacterSource[] = ["aon2-api", "plaync-api", "plaync-scrape"];
 
 function asObject(input: unknown): Record<string, unknown> | null {
   if (!input || typeof input !== "object") {
