@@ -1,4 +1,4 @@
-export type CharacterSource = "aon2-api" | "plaync-api" | "plaync-scrape";
+export type CharacterSource = "plaync-api" | "plaync-scrape";
 
 export type CharacterSummary = {
   id: string;

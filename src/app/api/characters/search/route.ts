@@ -1,7 +1,7 @@
 import { load } from "cheerio";
 import { NextRequest, NextResponse } from "next/server";
 
-import type { CharacterSource, CharacterSummary } from "@/types/character";
+import type { CharacterSummary } from "@/types/character";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -379,123 +379,6 @@ async function getPlayNcClassMap(): Promise<Map<number, ClassMeta>> {
     byPcId,
   };
   return byPcId;
-}
-
-function normalizeAon2Payload(payload: unknown): CharacterSummary[] {
-  const root = payload as UnknownRecord | undefined;
-  const candidates = [
-    payload,
-    root?.list,
-    (root?.data as UnknownRecord | undefined)?.list,
-    root?.data,
-  ];
-
-  for (const candidate of candidates) {
-    if (!Array.isArray(candidate)) {
-      continue;
-    }
-
-    const mapped: CharacterSummary[] = [];
-
-    for (const item of candidate) {
-      const record = item as UnknownRecord;
-      const stats = asRecord(record.stats) ?? asRecord(record.stat) ?? {};
-
-      const characterId = normalizeCharacterId(record.characterId ?? record.id ?? "");
-      const rawName = sanitizeName(record.name ?? record.characterName);
-      const serverId = toNumber(record.serverId);
-      const serverName = String(record.serverName ?? record.server ?? "").trim();
-
-      if (!characterId || !rawName || !serverId || !serverName) {
-        continue;
-      }
-
-      const raceValue = toNumber(record.race || record.raceId || 0);
-      const classId = toNumber(record.classId ?? record.pcId);
-      const className =
-        toOptionalString(record.className) ??
-        toOptionalString(record.classText) ??
-        toOptionalString(record.job);
-      const classKey = deriveClassKey(record.classKey, record.className, record.classText, record.job);
-      const itemLevel = pickPositiveNumberFromValues([
-        record.totalItemLevel,
-        record.itemLevel,
-        record.itemLv,
-        record.item_level,
-        record.total_item_level,
-        record.equipmentItemLevel,
-        stats.totalItemLevel,
-        stats.itemLevel,
-        stats.itemLv,
-      ]);
-      const combatPower = pickPositiveNumberFromValues([
-        record.maxCombatPower,
-        record.combatPower,
-        record.battlePower,
-        record.totalCombatPower,
-        record.maxBattlePower,
-        record.cp,
-        stats.maxCombatPower,
-        stats.combatPower,
-        stats.battlePower,
-        stats.cp,
-      ]);
-
-      mapped.push({
-        id: `${serverId}:${characterId}`,
-        characterId,
-        name: rawName,
-        serverId,
-        serverName,
-        level: toNumber(record.level),
-        race: raceValue > 0 ? raceValue : undefined,
-        classId: classId || undefined,
-        className,
-        classKey,
-        classIconUrl: toClassIconUrl(classKey),
-        itemLevel,
-        combatPower,
-        profileImageUrl: toAbsoluteProfileUrl(record.profileImageUrl ?? record.profileImage),
-        source: "aon2-api" as CharacterSource,
-      });
-    }
-
-    if (mapped.length > 0) {
-      return mapped;
-    }
-  }
-
-  return [];
-}
-
-async function searchWithAon2Api(name: string, serverId?: number, size = DEFAULT_PAGE_SIZE) {
-  const queryVariants: Array<Record<string, string>> = [
-    { keyword: name },
-    { name },
-    { q: name },
-  ];
-
-  for (const variant of queryVariants) {
-    const params = new URLSearchParams(variant);
-    params.set("size", String(size));
-    if (serverId) {
-      params.set("serverId", String(serverId));
-    }
-
-    try {
-      const payload = await fetchJson<unknown>(
-        `https://api.aon2.info/api/v1/aion2/characters/search-by-name?${params.toString()}`,
-      );
-      const normalized = normalizeAon2Payload(payload);
-      if (normalized.length > 0) {
-        return normalized;
-      }
-    } catch {
-      // Keep trying other query param names.
-    }
-  }
-
-  return [];
 }
 
 function mapPlayNcSearchItem(item: UnknownRecord, classMap: Map<number, ClassMeta>): CharacterSummary | null {
@@ -1040,45 +923,11 @@ export async function GET(request: NextRequest) {
   const warnings: string[] = [];
 
   try {
-    const aon2 = await searchWithAon2Api(name, serverId, size);
-    if (aon2.length > 0) {
-      let enriched = aon2;
-      try {
-        const classMap = await getPlayNcClassMap();
-        enriched = await enrichMissingStatsFromPlayNcDetail(aon2, classMap);
-      } catch (error) {
-        warnings.push(`plaync detail enrich on aon2 error: ${error instanceof Error ? error.message : "unknown"}`);
-      }
-      try {
-        enriched = await enrichMissingStatsFromA2Tool(enriched);
-      } catch (error) {
-        warnings.push(`a2tool enrich on aon2 error: ${error instanceof Error ? error.message : "unknown"}`);
-      }
-
-      return NextResponse.json({
-        source: "aon2-api",
-        items: enriched,
-        warnings,
-      });
-    }
-    warnings.push("aon2 api no result");
-  } catch (error) {
-    warnings.push(`aon2 api error: ${error instanceof Error ? error.message : "unknown"}`);
-  }
-
-  try {
     const playncApi = await searchWithPlayNcApi(name, serverId, size);
     if (playncApi.length > 0) {
-      let enriched = playncApi;
-      try {
-        enriched = await enrichMissingStatsFromA2Tool(playncApi);
-      } catch (error) {
-        warnings.push(`a2tool enrich on plaync error: ${error instanceof Error ? error.message : "unknown"}`);
-      }
-
       return NextResponse.json({
         source: "plaync-api",
-        items: enriched,
+        items: playncApi,
         warnings,
       });
     }
@@ -1096,11 +945,6 @@ export async function GET(request: NextRequest) {
         enriched = await enrichMissingStatsFromPlayNcDetail(scraped, classMap);
       } catch (error) {
         warnings.push(`plaync detail enrich on scrape error: ${error instanceof Error ? error.message : "unknown"}`);
-      }
-      try {
-        enriched = await enrichMissingStatsFromA2Tool(enriched);
-      } catch (error) {
-        warnings.push(`a2tool enrich on scrape error: ${error instanceof Error ? error.message : "unknown"}`);
       }
 
       return NextResponse.json({

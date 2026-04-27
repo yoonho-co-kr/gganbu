@@ -745,7 +745,6 @@ async function buildA2ToolFallbackDetail(params: {
     },
     links: {
       plaync: `https://aion2.plaync.com/ko-kr/characters/${serverId}/${encodeURIComponent(characterId)}`,
-      aon2: `https://aon2.info/character/${serverId}/${encodeURIComponent(characterId)}`,
     },
     warnings,
   };
@@ -951,45 +950,15 @@ export async function GET(request: NextRequest) {
       warnings.push("plaync summary fallback applied");
     }
 
-    if (!meaningfulPayload && characterNameRaw) {
-      const a2toolFallback = await buildA2ToolFallbackDetail({
-        characterId: resolvedCharacterId,
-        name: characterNameRaw,
-        serverId,
-        raceName: toOptionalString(profile.raceName) ?? summaryFallback?.raceName,
-        warnings,
-      });
-
-      if (a2toolFallback) {
-        return NextResponse.json(a2toolFallback);
-      }
-    }
-
     const className = toOptionalString(profile.className) ?? summaryFallback?.className ?? "";
 
     const activeSkillsRaw = pickSkillEntries(skillList, "active");
     const passiveSkillsRaw = pickSkillEntries(skillList, "passive");
     const stigmaSkillsRaw = pickSkillEntries(skillList, "stigma");
 
-    let rankerStats: RankerSkillStatsByCategory | null = null;
-    try {
-      rankerStats = className ? await fetchA2ToolSkillStats(className) : null;
-    } catch {
-      rankerStats = null;
-    }
-
-    const activeRecommended =
-      rankerStats && rankerStats.active.length > 0
-        ? pickHighInvestmentSkillNames(rankerStats.active)
-        : new Set<string>();
-    const passiveRecommended =
-      rankerStats && rankerStats.passive.length > 0
-        ? pickHighInvestmentSkillNames(rankerStats.passive)
-        : new Set<string>();
-    const stigmaRecommended =
-      rankerStats && rankerStats.stigma.length > 0
-        ? pickHighInvestmentSkillNames(rankerStats.stigma)
-        : new Set<string>();
+    const activeRecommended = new Set<string>();
+    const passiveRecommended = new Set<string>();
+    const stigmaRecommended = new Set<string>();
 
     const activeSkills = applySkillTargets(activeSkillsRaw, "active", activeRecommended);
     const passiveSkills = applySkillTargets(passiveSkillsRaw, "passive", passiveRecommended);
@@ -1026,7 +995,6 @@ export async function GET(request: NextRequest) {
       },
       links: {
         plaync: `https://aion2.plaync.com/ko-kr/characters/${serverId}/${encodeURIComponent(resolvedCharacterId)}`,
-        aon2: `https://aon2.info/character/${serverId}/${encodeURIComponent(resolvedCharacterId)}`,
       },
       warnings,
     });
