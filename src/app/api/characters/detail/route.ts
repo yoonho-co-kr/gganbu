@@ -501,6 +501,32 @@ function pickCombatPower(profile: UnknownRecord): number {
   );
 }
 
+function pickPreferredProfileStat(options: {
+  detailValue: number;
+  summaryValue: number;
+  preferSummary: boolean;
+}): number {
+  const { detailValue, summaryValue, preferSummary } = options;
+
+  if (preferSummary) {
+    if (summaryValue > 0) {
+      return summaryValue;
+    }
+    if (detailValue > 0) {
+      return detailValue;
+    }
+    return 0;
+  }
+
+  if (detailValue > 0) {
+    return detailValue;
+  }
+  if (summaryValue > 0) {
+    return summaryValue;
+  }
+  return 0;
+}
+
 function mapSkillList(list: unknown): CharacterSkill[] {
   if (!Array.isArray(list)) {
     return [];
@@ -818,12 +844,15 @@ export async function GET(request: NextRequest) {
   const characterIdRaw = request.nextUrl.searchParams.get("characterId")?.trim() ?? "";
   const serverIdRaw = request.nextUrl.searchParams.get("serverId")?.trim() ?? "";
   const characterNameRaw = request.nextUrl.searchParams.get("name")?.trim() ?? "";
+  const refreshRaw = request.nextUrl.searchParams.get("refresh")?.trim() ?? "";
 
   if (!characterIdRaw || !serverIdRaw) {
     return NextResponse.json({ error: "characterId, serverId 파라미터가 필요합니다." }, { status: 400 });
   }
 
   const serverId = toNumber(serverIdRaw, 0);
+  const forceRefresh =
+    refreshRaw === "1" || refreshRaw.toLowerCase() === "true" || refreshRaw.toLowerCase() === "yes";
   if (!serverId) {
     return NextResponse.json({ error: "유효하지 않은 serverId 입니다." }, { status: 400 });
   }
@@ -942,15 +971,17 @@ export async function GET(request: NextRequest) {
     const skillRoot = asRecord(equipmentPayload.skill) ?? {};
     const skillList = mapSkillList(skillRoot.skillList);
     const meaningfulPayload = hasMeaningfulDetailPayload(infoPayload, equipmentPayload);
-    const summaryFallback =
-      meaningfulPayload || !characterNameRaw
-        ? null
-        : await fetchPlayNcSearchSummaryByName(characterNameRaw, serverId).catch(() => null);
-    if (summaryFallback) {
+    const summaryProfile = characterNameRaw
+      ? await fetchPlayNcSearchSummaryByName(characterNameRaw, serverId).catch(() => null)
+      : null;
+    if (summaryProfile && (!meaningfulPayload || forceRefresh)) {
       warnings.push("plaync summary fallback applied");
     }
 
-    const className = toOptionalString(profile.className) ?? summaryFallback?.className ?? "";
+    const className = toOptionalString(profile.className) ?? summaryProfile?.className ?? "";
+    const detailItemLevel = pickItemLevel(statList, profile);
+    const detailCombatPower = pickCombatPower(profile);
+    const preferSummaryStats = forceRefresh || detailItemLevel <= 0 || detailCombatPower <= 0;
 
     const activeSkillsRaw = pickSkillEntries(skillList, "active");
     const passiveSkillsRaw = pickSkillEntries(skillList, "passive");
@@ -968,16 +999,24 @@ export async function GET(request: NextRequest) {
       source: "plaync-api",
       profile: {
         characterId: toOptionalString(profile.characterId) ?? resolvedCharacterId,
-        characterName: toOptionalString(profile.characterName) ?? summaryFallback?.name ?? "",
+        characterName: toOptionalString(profile.characterName) ?? summaryProfile?.name ?? "",
         serverId: toNumber(profile.serverId, serverId),
-        serverName: toOptionalString(profile.serverName) ?? summaryFallback?.serverName ?? "",
+        serverName: toOptionalString(profile.serverName) ?? summaryProfile?.serverName ?? "",
         className,
-        raceName: toOptionalString(profile.raceName) ?? summaryFallback?.raceName ?? "",
+        raceName: toOptionalString(profile.raceName) ?? summaryProfile?.raceName ?? "",
         regionName: toOptionalString(profile.regionName) ?? "",
         level: toNumber(profile.characterLevel, 0),
-        profileImage: toOptionalString(profile.profileImage) ?? summaryFallback?.profileImage ?? null,
-        itemLevel: pickItemLevel(statList, profile) || summaryFallback?.itemLevel || 0,
-        combatPower: pickCombatPower(profile) || summaryFallback?.combatPower || 0,
+        profileImage: toOptionalString(profile.profileImage) ?? summaryProfile?.profileImage ?? null,
+        itemLevel: pickPreferredProfileStat({
+          detailValue: detailItemLevel,
+          summaryValue: summaryProfile?.itemLevel ?? 0,
+          preferSummary: preferSummaryStats,
+        }),
+        combatPower: pickPreferredProfileStat({
+          detailValue: detailCombatPower,
+          summaryValue: summaryProfile?.combatPower ?? 0,
+          preferSummary: preferSummaryStats,
+        }),
       },
       skills: {
         activeSkills,

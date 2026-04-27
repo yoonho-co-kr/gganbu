@@ -661,6 +661,7 @@ export default function PartyBuilderPage({
               characterId: target.characterId,
               serverId: String(target.serverId),
               name: target.name,
+              refresh: "1",
               t: cacheBust,
             });
 
@@ -701,6 +702,7 @@ export default function PartyBuilderPage({
               name: target.name,
               serverId: String(target.serverId),
               size: "20",
+              refresh: "1",
               t: cacheBust,
             });
 

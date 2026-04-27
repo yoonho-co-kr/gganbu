@@ -440,6 +440,16 @@ type PlayNcDetailSnapshot = {
   hasCombatPowerSignal: boolean;
 };
 
+function preferExistingPositiveValue(currentValue: number, nextValue: number): number {
+  if (currentValue > 0) {
+    return currentValue;
+  }
+  if (nextValue > 0) {
+    return nextValue;
+  }
+  return currentValue;
+}
+
 function isItemLevelStatEntry(entry: UnknownRecord): boolean {
   const type = String(entry.type ?? "").toLowerCase();
   const name = String(entry.name ?? "");
@@ -618,12 +628,8 @@ async function enrichPlayNcCharacters(
         continue;
       }
 
-      if (item.detail.itemLevel > 0) {
-        entry.itemLevel = item.detail.itemLevel;
-      }
-      if (item.detail.combatPower > 0) {
-        entry.combatPower = item.detail.combatPower;
-      }
+      entry.itemLevel = preferExistingPositiveValue(entry.itemLevel, item.detail.itemLevel);
+      entry.combatPower = preferExistingPositiveValue(entry.combatPower, item.detail.combatPower);
       entry.profileImageUrl = item.detail.profileImageUrl ?? entry.profileImageUrl;
       entry.classId = item.detail.classId ?? entry.classId;
       entry.className = item.detail.className ?? entry.className;
