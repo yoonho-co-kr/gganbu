@@ -4,6 +4,7 @@ import { NextRequest, NextResponse } from "next/server";
 import type { CharacterSource, CharacterSummary } from "@/types/character";
 
 export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
 
 type UnknownRecord = Record<string, unknown>;
 type ClassMeta = {
@@ -14,9 +15,10 @@ type ClassMeta = {
 };
 
 const DEFAULT_PAGE_SIZE = 40;
-const DETAIL_ENRICH_LIMIT = 20;
-const DETAIL_BATCH_SIZE = 5;
+const DETAIL_ENRICH_LIMIT = 40;
+const DETAIL_BATCH_SIZE = 2;
 const CLASS_MAP_TTL_MS = 10 * 60 * 1000;
+const DETAIL_CACHE_TTL_MS = 60 * 1000;
 const CLASS_ICON_BASE_URL = "https://assets.playnccdn.com/static-aion2/characters/img/class";
 const CLASS_KEY_ALIAS: Record<string, string> = {
   gladiator: "gladiator",
@@ -43,6 +45,14 @@ let classMapCache:
       byPcId: Map<number, ClassMeta>;
     }
   | null = null;
+
+let detailCache = new Map<
+  string,
+  {
+    fetchedAt: number;
+    detail: PlayNcCharacterDetail;
+  }
+>();
 
 function sanitizeName(value: unknown): string {
   if (typeof value !== "string") {
@@ -118,7 +128,43 @@ function toOptionalString(value: unknown): string | undefined {
     return undefined;
   }
   const trimmed = value.trim();
-  return trimmed.length > 0 ? trimmed : undefined;
+  if (!trimmed || trimmed === "undefined" || trimmed === "$undefined" || trimmed === "null") {
+    return undefined;
+  }
+  return trimmed;
+}
+
+function normalizeCharacterId(value: unknown): string {
+  if (typeof value !== "string") {
+    return "";
+  }
+
+  let normalized = value.trim();
+  if (!normalized) {
+    return "";
+  }
+
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    try {
+      const decoded = decodeURIComponent(normalized);
+      if (!decoded || decoded === normalized) {
+        break;
+      }
+      normalized = decoded;
+    } catch {
+      break;
+    }
+  }
+
+  return normalized.trim();
+}
+
+function asArray(value: unknown): unknown[] {
+  return Array.isArray(value) ? value : [];
+}
+
+async function sleep(ms: number) {
+  await new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function normalizeClassKey(value: unknown): string | undefined {
@@ -226,7 +272,14 @@ function normalizeAon2Payload(payload: unknown): CharacterSummary[] {
   const candidates = [
     payload,
     root?.list,
+    root?.items,
+    root?.characters,
     (root?.data as UnknownRecord | undefined)?.list,
+    (root?.data as UnknownRecord | undefined)?.items,
+    (root?.data as UnknownRecord | undefined)?.characters,
+    (root?.result as UnknownRecord | undefined)?.list,
+    (root?.result as UnknownRecord | undefined)?.items,
+    (root?.result as UnknownRecord | undefined)?.characters,
     root?.data,
   ];
 
@@ -241,22 +294,24 @@ function normalizeAon2Payload(payload: unknown): CharacterSummary[] {
       const record = item as UnknownRecord;
       const stats = asRecord(record.stats) ?? asRecord(record.stat) ?? {};
 
-      const characterId = String(record.characterId ?? record.id ?? "").trim();
+      const characterId = normalizeCharacterId(record.characterId ?? record.id ?? record.character_id);
       const rawName = sanitizeName(record.name ?? record.characterName);
-      const serverId = toNumber(record.serverId);
-      const serverName = String(record.serverName ?? record.server ?? "").trim();
+      const serverRecord = asRecord(record.server) ?? {};
+      const serverId = toNumber(record.serverId ?? record.server_id ?? serverRecord.id);
+      const serverName = String(record.serverName ?? record.server_name ?? serverRecord.name ?? record.server ?? "").trim();
 
       if (!characterId || !rawName || !serverId || !serverName) {
         continue;
       }
 
       const raceValue = toNumber(record.race || record.raceId || 0);
-      const classId = toNumber(record.classId ?? record.pcId);
+      const classId = toNumber(record.classId ?? record.pcId ?? record.jobId ?? record.job_id);
       const className =
         toOptionalString(record.className) ??
         toOptionalString(record.classText) ??
+        toOptionalString(record.jobName) ??
         toOptionalString(record.job);
-      const classKey = deriveClassKey(record.classKey, record.className, record.classText, record.job);
+      const classKey = deriveClassKey(record.classKey, record.className, record.classText, record.jobName, record.job);
       const itemLevel = pickPositiveNumberFromValues([
         record.totalItemLevel,
         record.itemLevel,
@@ -264,9 +319,13 @@ function normalizeAon2Payload(payload: unknown): CharacterSummary[] {
         record.item_level,
         record.total_item_level,
         record.equipmentItemLevel,
+        record.equipment_item_level,
+        record.ncItemLevel,
+        record.nc_item_level,
         stats.totalItemLevel,
         stats.itemLevel,
         stats.itemLv,
+        stats.item_level,
       ]);
       const combatPower = pickPositiveNumberFromValues([
         record.maxCombatPower,
@@ -274,10 +333,17 @@ function normalizeAon2Payload(payload: unknown): CharacterSummary[] {
         record.battlePower,
         record.totalCombatPower,
         record.maxBattlePower,
+        record.ncCombatPower,
+        record.nc_combat_power,
+        record.combat_power,
+        record.power,
         record.cp,
         stats.maxCombatPower,
         stats.combatPower,
         stats.battlePower,
+        stats.combat_power,
+        stats.ncCombatPower,
+        stats.nc_combat_power,
         stats.cp,
       ]);
 
@@ -339,7 +405,7 @@ async function searchWithAon2Api(name: string, serverId?: number, size = DEFAULT
 }
 
 function mapPlayNcSearchItem(item: UnknownRecord, classMap: Map<number, ClassMeta>): CharacterSummary | null {
-  const characterId = String(item.characterId ?? "").trim();
+  const characterId = normalizeCharacterId(item.characterId);
   const serverId = toNumber(item.serverId);
   const serverName = String(item.serverName ?? "").trim();
   const name = sanitizeName(item.name);
@@ -385,41 +451,38 @@ function mapPlayNcSearchItem(item: UnknownRecord, classMap: Map<number, ClassMet
   };
 }
 
-async function fetchPlayNcCharacterDetail(characterId: string, serverId: number) {
-  let normalizedCharacterId = characterId;
-  try {
-    normalizedCharacterId = decodeURIComponent(characterId);
-  } catch {
-    normalizedCharacterId = characterId;
-  }
+type PlayNcCharacterDetail = {
+  itemLevel: number;
+  combatPower: number;
+  profileImageUrl: string | null;
+  classId?: number;
+  className?: string;
+  classKey?: string;
+  classIconUrl: string | null;
+};
 
-  const params = new URLSearchParams({
-    lang: "ko-kr",
-    characterId: normalizedCharacterId,
-    serverId: String(serverId),
-  });
+function isItemLevelStatEntry(entry: UnknownRecord): boolean {
+  const type = String(entry.type ?? "").toLowerCase();
+  const name = String(entry.name ?? "");
+  return /item[_-]?level/.test(type) || name.includes("아이템레벨");
+}
 
-  const detail = await fetchJson<UnknownRecord>(
-    `https://aion2.plaync.com/api/character/info?${params.toString()}`,
-  );
+function isCombatPowerStatEntry(entry: UnknownRecord): boolean {
+  const type = String(entry.type ?? "").toLowerCase();
+  const name = String(entry.name ?? "");
+  return /combat|battle/.test(type) || name.includes("전투력");
+}
 
-  const statList =
-    ((detail.stat as UnknownRecord | undefined)?.statList as UnknownRecord[] | undefined) ?? [];
-  const itemLevelEntry = statList.find((entry) => {
-    const type = String(entry.type ?? "").toLowerCase();
-    const name = String(entry.name ?? "");
-    return /item[_-]?level/.test(type) || name.includes("아이템레벨");
-  });
-  const combatPowerEntry = statList.find((entry) => {
-    const type = String(entry.type ?? "").toLowerCase();
-    const name = String(entry.name ?? "");
-    return /combat|battle/.test(type) || name.includes("전투력");
-  });
-
-  const profile = (detail.profile as UnknownRecord | undefined) ?? {};
+function extractPlayNcCharacterDetail(detail: UnknownRecord): PlayNcCharacterDetail {
+  const profile = asRecord(detail.profile) ?? {};
+  const detailStat = asRecord(detail.stat) ?? {};
+  const statList = asArray(detailStat.statList)
+    .map((entry) => asRecord(entry))
+    .filter((entry): entry is UnknownRecord => Boolean(entry));
+  const itemLevelEntry = statList.find((entry) => isItemLevelStatEntry(entry));
+  const combatPowerEntry = statList.find((entry) => isCombatPowerStatEntry(entry));
   const classId = toNumber(profile.pcId);
   const classKey = deriveClassKey(profile.className);
-  const detailStat = asRecord(detail.stat) ?? {};
 
   return {
     itemLevel: pickPositiveNumberFromValues([
@@ -449,6 +512,77 @@ async function fetchPlayNcCharacterDetail(characterId: string, serverId: number)
     classKey,
     classIconUrl: toClassIconUrl(classKey),
   };
+}
+
+function hasMeaningfulPlayNcCharacterDetail(detail: PlayNcCharacterDetail): boolean {
+  return detail.itemLevel > 0 || detail.combatPower > 0 || Boolean(detail.className);
+}
+
+function detailCacheKey(characterId: string, serverId: number) {
+  return `${serverId}:${normalizeCharacterId(characterId)}`;
+}
+
+async function fetchPlayNcCharacterDetail(characterId: string, serverId: number): Promise<PlayNcCharacterDetail> {
+  const normalizedCharacterId = normalizeCharacterId(characterId);
+  const cacheKey = detailCacheKey(normalizedCharacterId, serverId);
+  const cached = detailCache.get(cacheKey);
+
+  if (cached && Date.now() - cached.fetchedAt < DETAIL_CACHE_TTL_MS) {
+    return cached.detail;
+  }
+
+  const referer = `https://aion2.plaync.com/ko-kr/characters/${serverId}/${encodeURIComponent(normalizedCharacterId)}`;
+  const languages = ["ko-kr", "ko"];
+  const headerVariants: Array<HeadersInit | undefined> = [
+    undefined,
+    {
+      origin: "https://aion2.plaync.com",
+      referer,
+    },
+  ];
+
+  let fallbackDetail: PlayNcCharacterDetail | null = null;
+  let lastError: unknown = null;
+
+  for (let retry = 0; retry < 3; retry += 1) {
+    for (const lang of languages) {
+      for (const headers of headerVariants) {
+        try {
+          const params = new URLSearchParams({
+            lang,
+            characterId: normalizedCharacterId,
+            serverId: String(serverId),
+          });
+
+          const payload = await fetchJson<UnknownRecord>(
+            `https://aion2.plaync.com/api/character/info?${params.toString()}`,
+            { headers },
+            10_000,
+          );
+          const detail = extractPlayNcCharacterDetail(payload);
+          fallbackDetail = detail;
+
+          if (hasMeaningfulPlayNcCharacterDetail(detail)) {
+            detailCache.set(cacheKey, { fetchedAt: Date.now(), detail });
+            return detail;
+          }
+        } catch (error) {
+          lastError = error;
+        }
+      }
+    }
+
+    if (retry < 2) {
+      await sleep(150 * (retry + 1));
+    }
+  }
+
+  if (fallbackDetail) {
+    detailCache.set(cacheKey, { fetchedAt: Date.now(), detail: fallbackDetail });
+    return fallbackDetail;
+  }
+
+  throw lastError instanceof Error ? lastError : new Error("plaync detail unavailable");
 }
 
 async function enrichPlayNcCharacters(
@@ -503,6 +637,25 @@ async function enrichPlayNcCharacters(
           entry.classIconUrl = classMeta.classIconUrl ?? toClassIconUrl(entry.classKey);
         }
       }
+    }
+  }
+
+  const missing = target.filter((character) => character.itemLevel <= 0 || character.combatPower <= 0);
+  for (const character of missing) {
+    try {
+      const detail = await fetchPlayNcCharacterDetail(character.characterId, character.serverId);
+      const entry = byId.get(character.id);
+      if (!entry) {
+        continue;
+      }
+      if (detail.itemLevel > 0) {
+        entry.itemLevel = detail.itemLevel;
+      }
+      if (detail.combatPower > 0) {
+        entry.combatPower = detail.combatPower;
+      }
+    } catch {
+      // Best effort enrichment.
     }
   }
 
