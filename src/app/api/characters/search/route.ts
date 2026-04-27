@@ -22,6 +22,7 @@ const PLAYNC_SEARCH_TIMEOUT_MS = 4_000;
 const PLAYNC_DETAIL_TIMEOUT_MS = 1_800;
 const PLAYNC_CLASS_MAP_TIMEOUT_MS = 1_500;
 const CLASS_ICON_BASE_URL = "https://assets.playnccdn.com/static-aion2/characters/img/class";
+const MAX_WARNING_COUNT = 8;
 const CLASS_KEY_ALIAS: Record<string, string> = {
   gladiator: "gladiator",
   templar: "templar",
@@ -246,14 +247,28 @@ async function fetchJson<T>(url: string, init?: RequestInit, timeoutMs = 8_000):
       },
     });
 
+    const contentType = response.headers.get("content-type") ?? "";
+    const text = await response.text();
+
     if (!response.ok) {
-      throw new Error(`HTTP ${response.status} from ${url}`);
+      throw new Error(`HTTP ${response.status} from ${url}: ${text.slice(0, 160)}`);
     }
 
-    return (await response.json()) as T;
+    try {
+      return JSON.parse(text) as T;
+    } catch {
+      throw new Error(`JSON parse failed from ${url}: ${contentType || "unknown content-type"} ${text.slice(0, 160)}`);
+    }
   } finally {
     clearTimeout(timeout);
   }
+}
+
+function pushWarning(warnings: string[] | undefined, message: string) {
+  if (!warnings || warnings.length >= MAX_WARNING_COUNT) {
+    return;
+  }
+  warnings.push(message);
 }
 
 async function getPlayNcClassMap(): Promise<Map<number, ClassMeta>> {
@@ -498,6 +513,7 @@ async function fetchPlayNcCharacterDetail(characterId: string, serverId: number)
 async function enrichPlayNcCharacters(
   characters: CharacterSummary[],
   classMap: Map<number, ClassMeta>,
+  warnings?: string[],
 ): Promise<CharacterSummary[]> {
   const base = [...characters];
   const target = base.slice(0, DETAIL_ENRICH_LIMIT);
@@ -511,7 +527,11 @@ async function enrichPlayNcCharacters(
         try {
           const detail = await fetchPlayNcCharacterDetail(character.characterId, character.serverId);
           return { character, detail };
-        } catch {
+        } catch (error) {
+          pushWarning(
+            warnings,
+            `detail failed ${character.name}[${character.serverName}]: ${error instanceof Error ? error.message : "unknown"}`,
+          );
           return null;
         }
       }),
@@ -532,6 +552,12 @@ async function enrichPlayNcCharacters(
       }
       if (item.detail.combatPower > 0) {
         entry.combatPower = item.detail.combatPower;
+      }
+      if (item.detail.itemLevel <= 0 || item.detail.combatPower <= 0) {
+        pushWarning(
+          warnings,
+          `detail empty stats ${entry.name}[${entry.serverName}]: IL ${item.detail.itemLevel}, CP ${item.detail.combatPower}`,
+        );
       }
       entry.profileImageUrl = item.detail.profileImageUrl ?? entry.profileImageUrl;
       entry.classId = item.detail.classId ?? entry.classId;
@@ -556,6 +582,7 @@ async function enrichPlayNcCharacters(
 async function enrichMissingStatsFromPlayNcDetail(
   characters: CharacterSummary[],
   classMap: Map<number, ClassMeta>,
+  warnings?: string[],
 ): Promise<CharacterSummary[]> {
   const base = [...characters];
   const byId = new Map(base.map((character) => [character.id, character]));
@@ -571,7 +598,11 @@ async function enrichMissingStatsFromPlayNcDetail(
         try {
           const detail = await fetchPlayNcCharacterDetail(character.characterId, character.serverId);
           return { character, detail };
-        } catch {
+        } catch (error) {
+          pushWarning(
+            warnings,
+            `detail failed ${character.name}[${character.serverName}]: ${error instanceof Error ? error.message : "unknown"}`,
+          );
           return null;
         }
       }),
@@ -592,6 +623,12 @@ async function enrichMissingStatsFromPlayNcDetail(
       }
       if (item.detail.combatPower > 0 && entry.combatPower <= 0) {
         entry.combatPower = item.detail.combatPower;
+      }
+      if (item.detail.itemLevel <= 0 || item.detail.combatPower <= 0) {
+        pushWarning(
+          warnings,
+          `detail empty stats ${entry.name}[${entry.serverName}]: IL ${item.detail.itemLevel}, CP ${item.detail.combatPower}`,
+        );
       }
       entry.profileImageUrl = entry.profileImageUrl ?? item.detail.profileImageUrl;
 
@@ -622,7 +659,12 @@ async function enrichMissingStatsFromPlayNcDetail(
   return base;
 }
 
-async function searchWithPlayNcApi(name: string, serverId?: number, size = DEFAULT_PAGE_SIZE) {
+async function searchWithPlayNcApi(
+  name: string,
+  serverId?: number,
+  size = DEFAULT_PAGE_SIZE,
+  warnings?: string[],
+) {
   const fetchSearchList = async (targetServerId?: number) => {
     const params = new URLSearchParams({
       keyword: name,
@@ -658,7 +700,7 @@ async function searchWithPlayNcApi(name: string, serverId?: number, size = DEFAU
     return [];
   }
 
-  return enrichPlayNcCharacters(mapped, classMap);
+  return enrichPlayNcCharacters(mapped, classMap, warnings);
 }
 
 async function searchWithPlayNcScrape(name: string, serverId?: number): Promise<CharacterSummary[]> {
@@ -682,7 +724,7 @@ export async function GET(request: NextRequest) {
   const warnings: string[] = [];
 
   try {
-    const playncApi = await searchWithPlayNcApi(name, serverId, size);
+    const playncApi = await searchWithPlayNcApi(name, serverId, size, warnings);
     if (playncApi.length > 0) {
       return NextResponse.json({
         source: "plaync-api",
@@ -701,7 +743,7 @@ export async function GET(request: NextRequest) {
       let enriched = scraped;
       try {
         const classMap = await getPlayNcClassMap();
-        enriched = await enrichMissingStatsFromPlayNcDetail(scraped, classMap);
+        enriched = await enrichMissingStatsFromPlayNcDetail(scraped, classMap, warnings);
       } catch (error) {
         warnings.push(`plaync detail enrich on scrape error: ${error instanceof Error ? error.message : "unknown"}`);
       }
