@@ -1,10 +1,9 @@
-import { load } from "cheerio";
 import { NextRequest, NextResponse } from "next/server";
 
 import type { CharacterSummary } from "@/types/character";
 
 export const dynamic = "force-dynamic";
-export const runtime = "nodejs";
+export const runtime = "edge";
 
 type UnknownRecord = Record<string, unknown>;
 type ClassMeta = {
@@ -21,7 +20,6 @@ const CLASS_MAP_TTL_MS = 10 * 60 * 1000;
 const DETAIL_CACHE_TTL_MS = 60 * 1000;
 const PLAYNC_SEARCH_TIMEOUT_MS = 4_000;
 const PLAYNC_DETAIL_TIMEOUT_MS = 1_800;
-const PLAYNC_PROFILE_PAGE_TIMEOUT_MS = 1_500;
 const PLAYNC_CLASS_MAP_TIMEOUT_MS = 1_500;
 const CLASS_ICON_BASE_URL = "https://assets.playnccdn.com/static-aion2/characters/img/class";
 const CLASS_KEY_ALIAS: Record<string, string> = {
@@ -258,33 +256,6 @@ async function fetchJson<T>(url: string, init?: RequestInit, timeoutMs = 8_000):
   }
 }
 
-async function fetchText(url: string, init?: RequestInit, timeoutMs = 8_000): Promise<string> {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), timeoutMs);
-
-  try {
-    const response = await fetch(url, {
-      ...init,
-      signal: controller.signal,
-      cache: "no-store",
-      headers: {
-        "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "user-agent":
-          "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
-        ...(init?.headers ?? {}),
-      },
-    });
-
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status} from ${url}`);
-    }
-
-    return response.text();
-  } finally {
-    clearTimeout(timeout);
-  }
-}
-
 async function getPlayNcClassMap(): Promise<Map<number, ClassMeta>> {
   if (classMapCache && Date.now() - classMapCache.fetchedAt < CLASS_MAP_TTL_MS) {
     return classMapCache.byPcId;
@@ -460,65 +431,6 @@ function detailCacheKey(characterId: string, serverId: number) {
   return `${serverId}:${normalizeCharacterId(characterId)}`;
 }
 
-function mergePlayNcCharacterDetail(
-  base: PlayNcCharacterDetail | null,
-  fallback: PlayNcCharacterDetail,
-): PlayNcCharacterDetail {
-  return {
-    itemLevel: base?.itemLevel && base.itemLevel > 0 ? base.itemLevel : fallback.itemLevel,
-    combatPower: base?.combatPower && base.combatPower > 0 ? base.combatPower : fallback.combatPower,
-    profileImageUrl: base?.profileImageUrl ?? fallback.profileImageUrl,
-    classId: base?.classId ?? fallback.classId,
-    className: base?.className ?? fallback.className,
-    classKey: base?.classKey ?? fallback.classKey,
-    classIconUrl: base?.classIconUrl ?? fallback.classIconUrl,
-  };
-}
-
-function pickNumberBySelectors($: ReturnType<typeof load>, selectors: string[]): number {
-  for (const selector of selectors) {
-    const value = toNumber($(selector).first().text());
-    if (value > 0) {
-      return value;
-    }
-  }
-  return 0;
-}
-
-async function fetchPlayNcProfilePageDetail(characterId: string, serverId: number): Promise<PlayNcCharacterDetail | null> {
-  const normalizedCharacterId = normalizeCharacterId(characterId);
-  if (!normalizedCharacterId || !serverId) {
-    return null;
-  }
-
-  const encodedCharacterId = encodeURIComponent(normalizedCharacterId);
-  const html = await fetchText(
-    `https://aion2.plaync.com/ko-kr/characters/${serverId}/${encodedCharacterId}`,
-    undefined,
-    PLAYNC_PROFILE_PAGE_TIMEOUT_MS,
-  );
-  const $ = load(html);
-  const itemLevel = pickNumberBySelectors($, [
-    ".profile__info-item-level",
-    "[class*='profile__info-item-level']",
-  ]);
-  const combatPower = pickNumberBySelectors($, [
-    ".profile__info-power-level",
-    "[class*='profile__info-power-level']",
-  ]);
-
-  if (itemLevel <= 0 && combatPower <= 0) {
-    return null;
-  }
-
-  return {
-    itemLevel,
-    combatPower,
-    profileImageUrl: null,
-    classIconUrl: null,
-  };
-}
-
 async function fetchPlayNcCharacterDetail(characterId: string, serverId: number): Promise<PlayNcCharacterDetail> {
   const normalizedCharacterId = normalizeCharacterId(characterId);
   const cacheKey = detailCacheKey(normalizedCharacterId, serverId);
@@ -573,17 +485,6 @@ async function fetchPlayNcCharacterDetail(characterId: string, serverId: number)
         }
       }
     }
-  }
-
-  try {
-    const pageDetail = await fetchPlayNcProfilePageDetail(normalizedCharacterId, serverId);
-    if (pageDetail) {
-      const detail = mergePlayNcCharacterDetail(fallbackDetail, pageDetail);
-      detailCache.set(cacheKey, { fetchedAt: Date.now(), detail });
-      return detail;
-    }
-  } catch {
-    // The profile page renders these nodes client-side in some responses, so this is only a best-effort fallback.
   }
 
   if (fallbackDetail) {
@@ -761,107 +662,9 @@ async function searchWithPlayNcApi(name: string, serverId?: number, size = DEFAU
 }
 
 async function searchWithPlayNcScrape(name: string, serverId?: number): Promise<CharacterSummary[]> {
-  const params = new URLSearchParams({
-    keyword: name,
-  });
-  if (serverId) {
-    params.set("serverId", String(serverId));
-  }
-
-  const html = await fetch(`https://aion2.plaync.com/ko-kr/characters/index?${params.toString()}`, {
-    cache: "no-store",
-    headers: {
-      "user-agent":
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
-    },
-  }).then(async (response) => {
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status} from characters index`);
-    }
-    return response.text();
-  });
-
-  const $ = load(html);
-  const found: CharacterSummary[] = [];
-
-  const selectors = ["[data-character-id]", ".character-card", ".search-result-item"];
-  const seen = new Set<string>();
-
-  for (const selector of selectors) {
-    $(selector).each((_, element) => {
-      const el = $(element);
-      const characterId =
-        (el.attr("data-character-id") || el.find("[data-character-id]").attr("data-character-id") || "").trim();
-
-      const name = sanitizeName(
-        el.attr("data-character-name") ||
-          el.find(".character-name").text() ||
-          el.find(".name").text() ||
-          el.text(),
-      );
-
-      const serverId =
-        toNumber(el.attr("data-server-id")) ||
-        toNumber(el.find("[data-server-id]").attr("data-server-id")) ||
-        0;
-
-      const serverName =
-        (el.attr("data-server-name") ||
-          el.find(".server-name").text() ||
-          el.find(".server").text() ||
-          "")
-          .replace(/\s+/g, " ")
-          .trim();
-      const itemLevel = pickPositiveNumberFromValues([
-        el.attr("data-item-level"),
-        el.attr("data-itemlevel"),
-        el.find("[data-item-level]").attr("data-item-level"),
-        el.find(".item-level").text(),
-        el.find(".itemlevel").text(),
-      ]);
-      const combatPower = pickPositiveNumberFromValues([
-        el.attr("data-combat-power"),
-        el.attr("data-combatpower"),
-        el.find("[data-combat-power]").attr("data-combat-power"),
-        el.find(".combat-power").text(),
-        el.find(".cp").text(),
-      ]);
-
-      if (!characterId || !name || !serverId || !serverName) {
-        return;
-      }
-
-      const id = `${serverId}:${characterId}`;
-      if (seen.has(id)) {
-        return;
-      }
-
-      seen.add(id);
-      found.push({
-        id,
-        characterId,
-        name,
-        serverId,
-        serverName,
-        level: 0,
-        race: undefined,
-        classId: undefined,
-        className: undefined,
-        classKey: undefined,
-        classIconUrl: null,
-        itemLevel,
-        combatPower,
-        profileImageUrl: toAbsoluteProfileUrl(el.find("img").first().attr("src")),
-        source: "plaync-scrape",
-      });
-    });
-
-    if (found.length > 0) {
-      break;
-    }
-  }
-
-  return found;
+  void name;
+  void serverId;
+  return [];
 }
 
 export async function GET(request: NextRequest) {
