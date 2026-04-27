@@ -15,10 +15,14 @@ type ClassMeta = {
 };
 
 const DEFAULT_PAGE_SIZE = 40;
-const DETAIL_ENRICH_LIMIT = 40;
-const DETAIL_BATCH_SIZE = 2;
+const DETAIL_ENRICH_LIMIT = 8;
+const DETAIL_BATCH_SIZE = 4;
 const CLASS_MAP_TTL_MS = 10 * 60 * 1000;
 const DETAIL_CACHE_TTL_MS = 60 * 1000;
+const AON2_SEARCH_TIMEOUT_MS = 2_500;
+const PLAYNC_SEARCH_TIMEOUT_MS = 4_000;
+const PLAYNC_DETAIL_TIMEOUT_MS = 1_800;
+const PLAYNC_CLASS_MAP_TIMEOUT_MS = 1_500;
 const CLASS_ICON_BASE_URL = "https://assets.playnccdn.com/static-aion2/characters/img/class";
 const CLASS_KEY_ALIAS: Record<string, string> = {
   gladiator: "gladiator",
@@ -53,6 +57,30 @@ let detailCache = new Map<
     detail: PlayNcCharacterDetail;
   }
 >();
+
+function createClassMeta(classId: number, className: string): ClassMeta {
+  const classKey = deriveClassKey(className);
+  return {
+    classId,
+    className,
+    classKey,
+    classIconUrl: toClassIconUrl(classKey),
+  };
+}
+
+function createFallbackClassMap(): Map<number, ClassMeta> {
+  const classNames = ["검성", "수호성", "궁성", "살성", "정령성", "마도성", "치유성", "호법성"];
+  const byPcId = new Map<number, ClassMeta>();
+
+  for (let classIndex = 0; classIndex < classNames.length; classIndex += 1) {
+    for (let offset = 0; offset < 4; offset += 1) {
+      const classId = 5 + classIndex * 4 + offset;
+      byPcId.set(classId, createClassMeta(classId, classNames[classIndex]));
+    }
+  }
+
+  return byPcId;
+}
 
 function sanitizeName(value: unknown): string {
   if (typeof value !== "string") {
@@ -163,10 +191,6 @@ function asArray(value: unknown): unknown[] {
   return Array.isArray(value) ? value : [];
 }
 
-async function sleep(ms: number) {
-  await new Promise((resolve) => setTimeout(resolve, ms));
-}
-
 function normalizeClassKey(value: unknown): string | undefined {
   if (typeof value !== "string") {
     return undefined;
@@ -239,10 +263,32 @@ async function getPlayNcClassMap(): Promise<Map<number, ClassMeta>> {
     return classMapCache.byPcId;
   }
 
-  const payload = await fetchJson<{ pcDataList?: UnknownRecord[] }>(
-    "https://aion2.plaync.com/api/gameinfo/pcdata?lang=ko-kr",
-  );
+  let payload: { pcDataList?: UnknownRecord[] };
+  try {
+    payload = await fetchJson<{ pcDataList?: UnknownRecord[] }>(
+      "https://aion2.plaync.com/api/gameinfo/pcdata?lang=ko-kr",
+      undefined,
+      PLAYNC_CLASS_MAP_TIMEOUT_MS,
+    );
+  } catch {
+    const fallback = createFallbackClassMap();
+    classMapCache = {
+      fetchedAt: Date.now(),
+      byPcId: fallback,
+    };
+    return fallback;
+  }
+
   const list = Array.isArray(payload.pcDataList) ? payload.pcDataList : [];
+
+  if (list.length === 0) {
+    const fallback = createFallbackClassMap();
+    classMapCache = {
+      fetchedAt: Date.now(),
+      byPcId: fallback,
+    };
+    return fallback;
+  }
 
   const byPcId = new Map<number, ClassMeta>();
   for (const item of list) {
@@ -260,11 +306,13 @@ async function getPlayNcClassMap(): Promise<Map<number, ClassMeta>> {
     });
   }
 
+  const resolved = byPcId.size > 0 ? byPcId : createFallbackClassMap();
+
   classMapCache = {
     fetchedAt: Date.now(),
-    byPcId,
+    byPcId: resolved,
   };
-  return byPcId;
+  return resolved;
 }
 
 function normalizeAon2Payload(payload: unknown): CharacterSummary[] {
@@ -391,6 +439,8 @@ async function searchWithAon2Api(name: string, serverId?: number, size = DEFAULT
     try {
       const payload = await fetchJson<unknown>(
         `https://api.aon2.info/api/v1/aion2/characters/search-by-name?${params.toString()}`,
+        undefined,
+        AON2_SEARCH_TIMEOUT_MS,
       );
       const normalized = normalizeAon2Payload(payload);
       if (normalized.length > 0) {
@@ -531,20 +581,15 @@ async function fetchPlayNcCharacterDetail(characterId: string, serverId: number)
     return cached.detail;
   }
 
-  const referer = `https://aion2.plaync.com/ko-kr/characters/${serverId}/${encodeURIComponent(normalizedCharacterId)}`;
-  const languages = ["ko-kr", "ko"];
+  const languages = ["ko-kr"];
   const headerVariants: Array<HeadersInit | undefined> = [
     undefined,
-    {
-      origin: "https://aion2.plaync.com",
-      referer,
-    },
   ];
 
   let fallbackDetail: PlayNcCharacterDetail | null = null;
   let lastError: unknown = null;
 
-  for (let retry = 0; retry < 3; retry += 1) {
+  for (let retry = 0; retry < 1; retry += 1) {
     for (const lang of languages) {
       for (const headers of headerVariants) {
         try {
@@ -557,7 +602,7 @@ async function fetchPlayNcCharacterDetail(characterId: string, serverId: number)
           const payload = await fetchJson<UnknownRecord>(
             `https://aion2.plaync.com/api/character/info?${params.toString()}`,
             { headers },
-            10_000,
+            PLAYNC_DETAIL_TIMEOUT_MS,
           );
           const detail = extractPlayNcCharacterDetail(payload);
           fallbackDetail = detail;
@@ -570,10 +615,6 @@ async function fetchPlayNcCharacterDetail(characterId: string, serverId: number)
           lastError = error;
         }
       }
-    }
-
-    if (retry < 2) {
-      await sleep(150 * (retry + 1));
     }
   }
 
@@ -637,25 +678,6 @@ async function enrichPlayNcCharacters(
           entry.classIconUrl = classMeta.classIconUrl ?? toClassIconUrl(entry.classKey);
         }
       }
-    }
-  }
-
-  const missing = target.filter((character) => character.itemLevel <= 0 || character.combatPower <= 0);
-  for (const character of missing) {
-    try {
-      const detail = await fetchPlayNcCharacterDetail(character.characterId, character.serverId);
-      const entry = byId.get(character.id);
-      if (!entry) {
-        continue;
-      }
-      if (detail.itemLevel > 0) {
-        entry.itemLevel = detail.itemLevel;
-      }
-      if (detail.combatPower > 0) {
-        entry.combatPower = detail.combatPower;
-      }
-    } catch {
-      // Best effort enrichment.
     }
   }
 
@@ -745,6 +767,8 @@ async function searchWithPlayNcApi(name: string, serverId?: number, size = DEFAU
 
     const payload = await fetchJson<{ list?: UnknownRecord[] }>(
       `https://aion2.plaync.com/ko-kr/api/search/aion2/search/v2/character?${params.toString()}`,
+      undefined,
+      PLAYNC_SEARCH_TIMEOUT_MS,
     );
 
     return Array.isArray(payload.list) ? payload.list : [];
