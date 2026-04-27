@@ -27,7 +27,6 @@ type A2ToolCharacterSnapshot = {
 };
 
 const DEFAULT_PAGE_SIZE = 40;
-const DETAIL_ENRICH_LIMIT = 20;
 const DETAIL_BATCH_SIZE = 5;
 const A2TOOL_ENRICH_LIMIT = 12;
 const CLASS_MAP_TTL_MS = 10 * 60 * 1000;
@@ -599,9 +598,10 @@ async function fetchPlayNcCharacterDetail(characterId: string, serverId: number)
 async function enrichPlayNcCharacters(
   characters: CharacterSummary[],
   classMap: Map<number, ClassMeta>,
+  limit = characters.length,
 ): Promise<CharacterSummary[]> {
   const base = [...characters];
-  const target = base.slice(0, DETAIL_ENRICH_LIMIT);
+  const target = base.slice(0, Math.max(0, limit));
   const byId = new Map(base.map((character) => [character.id, character]));
 
   for (let index = 0; index < target.length; index += DETAIL_BATCH_SIZE) {
@@ -658,7 +658,7 @@ async function enrichMissingStatsFromPlayNcDetail(
   const byId = new Map(base.map((character) => [character.id, character]));
   const target = base
     .filter((character) => character.itemLevel <= 0 || character.combatPower <= 0)
-    .slice(0, DETAIL_ENRICH_LIMIT);
+    .slice(0, DEFAULT_PAGE_SIZE);
 
   for (let index = 0; index < target.length; index += DETAIL_BATCH_SIZE) {
     const batch = target.slice(index, index + DETAIL_BATCH_SIZE);
@@ -808,7 +808,7 @@ async function searchWithPlayNcApi(name: string, serverId?: number, size = DEFAU
     return [];
   }
 
-  return enrichPlayNcCharacters(mapped, classMap);
+  return enrichPlayNcCharacters(mapped, classMap, size);
 }
 
 async function searchWithPlayNcScrape(name: string, serverId?: number): Promise<CharacterSummary[]> {
