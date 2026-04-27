@@ -19,7 +19,7 @@ const DETAIL_BATCH_SIZE = 4;
 const CLASS_MAP_TTL_MS = 10 * 60 * 1000;
 const DETAIL_CACHE_TTL_MS = 60 * 1000;
 const PLAYNC_SEARCH_TIMEOUT_MS = 4_000;
-const PLAYNC_DETAIL_TIMEOUT_MS = 1_800;
+const PLAYNC_DETAIL_TIMEOUT_MS = 3_500;
 const PLAYNC_CLASS_MAP_TIMEOUT_MS = 1_500;
 const CLASS_ICON_BASE_URL = "https://assets.playnccdn.com/static-aion2/characters/img/class";
 const MAX_WARNING_COUNT = 8;
@@ -455,50 +455,61 @@ async function fetchPlayNcCharacterDetail(characterId: string, serverId: number)
     return cached.detail;
   }
 
-  const languages = ["ko-kr"];
   const detailReferer = `https://aion2.plaync.com/ko-kr/characters/${serverId}/${encodeURIComponent(normalizedCharacterId)}`;
-  const headerVariants: Array<HeadersInit | undefined> = [
-    {
-      "accept-language": "ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7",
-      "origin": "https://aion2.plaync.com",
-      "referer": detailReferer,
-      "x-requested-with": "XMLHttpRequest",
-      "sec-fetch-dest": "empty",
-      "sec-fetch-mode": "cors",
-      "sec-fetch-site": "same-origin",
-    },
+  const browserHeaders: HeadersInit = {
+    "accept-language": "ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7",
+    "origin": "https://aion2.plaync.com",
+    "referer": detailReferer,
+    "x-requested-with": "XMLHttpRequest",
+    "sec-fetch-dest": "empty",
+    "sec-fetch-mode": "cors",
+    "sec-fetch-site": "same-origin",
+  };
+  const refererHeaders: HeadersInit = {
+    "accept-language": "ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7",
+    "referer": detailReferer,
+    "x-requested-with": "XMLHttpRequest",
+  };
+  const requestVariants: Array<{
+    label: string;
+    baseUrl: string;
+    headers?: HeadersInit;
+  }> = [
+    { label: "root-browser", baseUrl: "https://aion2.plaync.com/api/character/info", headers: browserHeaders },
+    { label: "root-referer", baseUrl: "https://aion2.plaync.com/api/character/info", headers: refererHeaders },
+    { label: "root-basic", baseUrl: "https://aion2.plaync.com/api/character/info" },
+    { label: "locale-browser", baseUrl: "https://aion2.plaync.com/ko-kr/api/character/info", headers: browserHeaders },
   ];
 
   let fallbackDetail: PlayNcCharacterDetail | null = null;
   let lastError: unknown = null;
+  const errors: string[] = [];
 
-  for (let retry = 0; retry < 1; retry += 1) {
-    for (const lang of languages) {
-      for (const headers of headerVariants) {
-        try {
-          const params = new URLSearchParams({
-            lang,
-            characterId: normalizedCharacterId,
-            serverId: String(serverId),
-            t: String(Date.now()),
-          });
+  for (const variant of requestVariants) {
+    try {
+      const params = new URLSearchParams({
+        lang: "ko-kr",
+        characterId: normalizedCharacterId,
+        serverId: String(serverId),
+        t: String(Date.now()),
+      });
 
-          const payload = await fetchJson<UnknownRecord>(
-            `https://aion2.plaync.com/api/character/info?${params.toString()}`,
-            { headers },
-            PLAYNC_DETAIL_TIMEOUT_MS,
-          );
-          const detail = extractPlayNcCharacterDetail(payload);
-          fallbackDetail = detail;
+      const payload = await fetchJson<UnknownRecord>(
+        `${variant.baseUrl}?${params.toString()}`,
+        variant.headers ? { headers: variant.headers } : undefined,
+        PLAYNC_DETAIL_TIMEOUT_MS,
+      );
+      const detail = extractPlayNcCharacterDetail(payload);
+      fallbackDetail = detail;
 
-          if (hasMeaningfulPlayNcCharacterDetail(detail)) {
-            detailCache.set(cacheKey, { fetchedAt: Date.now(), detail });
-            return detail;
-          }
-        } catch (error) {
-          lastError = error;
-        }
+      if (hasMeaningfulPlayNcCharacterDetail(detail)) {
+        detailCache.set(cacheKey, { fetchedAt: Date.now(), detail });
+        return detail;
       }
+      errors.push(`${variant.label}: empty stats`);
+    } catch (error) {
+      lastError = error;
+      errors.push(`${variant.label}: ${error instanceof Error ? error.message : "unknown"}`);
     }
   }
 
@@ -507,7 +518,13 @@ async function fetchPlayNcCharacterDetail(characterId: string, serverId: number)
     return fallbackDetail;
   }
 
-  throw lastError instanceof Error ? lastError : new Error("plaync detail unavailable");
+  throw new Error(
+    errors.length > 0
+      ? errors.slice(0, 3).join(" | ")
+      : lastError instanceof Error
+        ? lastError.message
+        : "plaync detail unavailable",
+  );
 }
 
 async function enrichPlayNcCharacters(
