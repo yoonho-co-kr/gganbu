@@ -49,7 +49,7 @@ export default {
     const requestUrl = new URL(request.url);
     const characterId = requestUrl.searchParams.get("characterId")?.trim() ?? "";
     const serverId = requestUrl.searchParams.get("serverId")?.trim() ?? "";
-    const lang = requestUrl.searchParams.get("lang")?.trim() || "ko-kr";
+    const lang = requestUrl.searchParams.get("lang")?.trim() || "ko";
 
     if (!characterId || !serverId) {
       return jsonResponse({ error: "characterId/serverId are required" }, { status: 400 });

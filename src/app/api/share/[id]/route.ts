@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 
+import { setShareSnapshotCharacterSpecCache } from "@/lib/character-spec-cache";
 import { getShare } from "@/lib/share-store";
 
 export const runtime = "nodejs";
@@ -16,6 +17,8 @@ export async function GET(
   if (!shared) {
     return NextResponse.json({ error: "공유 데이터를 찾을 수 없습니다." }, { status: 404 });
   }
+
+  void setShareSnapshotCharacterSpecCache(shared.snapshot);
 
   return NextResponse.json({
     id: shared.id,

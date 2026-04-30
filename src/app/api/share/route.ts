@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 
 import { encodeCompressedSnapshotToken } from "@/lib/share-link-server";
+import { setShareSnapshotCharacterSpecCache } from "@/lib/character-spec-cache";
 import { parseShareSnapshot } from "@/lib/share-snapshot";
 import { createShare } from "@/lib/share-store";
 
@@ -18,6 +19,7 @@ export async function POST(request: Request) {
 
     try {
       const stored = await createShare(snapshot);
+      void setShareSnapshotCharacterSpecCache(stored.snapshot);
 
       return NextResponse.json({
         id: stored.id,
