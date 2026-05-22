@@ -4,7 +4,7 @@ import { getCharacterSpecCache, setCharacterSpecCache } from "@/lib/character-sp
 import type { CharacterSummary } from "@/types/character";
 
 export const dynamic = "force-dynamic";
-export const runtime = "nodejs";
+export const runtime = "edge";
 export const maxDuration = 30;
 
 type UnknownRecord = Record<string, unknown>;

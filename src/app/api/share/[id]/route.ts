@@ -18,7 +18,7 @@ export async function GET(
     return NextResponse.json({ error: "공유 데이터를 찾을 수 없습니다." }, { status: 404 });
   }
 
-  void setShareSnapshotCharacterSpecCache(shared.snapshot);
+  await setShareSnapshotCharacterSpecCache(shared.snapshot).catch(() => undefined);
 
   return NextResponse.json({
     id: shared.id,

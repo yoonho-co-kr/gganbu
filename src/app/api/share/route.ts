@@ -19,7 +19,7 @@ export async function POST(request: Request) {
 
     try {
       const stored = await createShare(snapshot);
-      void setShareSnapshotCharacterSpecCache(stored.snapshot);
+      await setShareSnapshotCharacterSpecCache(stored.snapshot).catch(() => undefined);
 
       return NextResponse.json({
         id: stored.id,

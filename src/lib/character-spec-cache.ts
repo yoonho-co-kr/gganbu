@@ -18,7 +18,7 @@ type CachedCharacterSpec = {
   cachedAt: string;
 };
 
-const CACHE_TTL_DAYS = 7;
+const CACHE_TTL_DAYS = 365;
 const CACHE_TTL_SECONDS = CACHE_TTL_DAYS * 24 * 60 * 60;
 const KEY_PREFIX = "character-spec:";
 
